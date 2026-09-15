@@ -1,0 +1,17 @@
+{
+  // Configuration TypeScript des tests.
+  //
+  // Les tests compilent à la fois `src/` et `test/` (le fichier d'environnement
+  // partagé vit dans `test/`). Sans un `rootDir` explicite, TypeScript déduit un
+  // répertoire racine différent de celui du build et refuse de compiler.
+  //
+  // Séparer ce fichier du `tsconfig.json` évite surtout de toucher au layout de
+  // `dist/`, sur lequel repose la commande `start:prod`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "declaration": false,
+    "incremental": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}
