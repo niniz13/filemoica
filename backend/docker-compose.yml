@@ -1,0 +1,43 @@
+# PostgreSQL de développement.
+#
+# Sert à travailler et à jouer les tests en local. L'infrastructure de
+# production est du ressort de l'équipe SRC : ce fichier est un point de départ
+# à aligner avec eux, pas la cible de déploiement.
+#
+# Les identifiants ci-dessous sont des valeurs de développement, volontairement
+# lisibles : cette base ne contient que des données fictives et n'est exposée
+# que sur la machine locale. Les identifiants de production viennent des
+# variables d'environnement fournies par SRC et ne sont jamais versionnés.
+#
+#   Démarrer : docker compose up -d
+#   Arrêter  : docker compose down
+#   Purger   : docker compose down -v   (supprime aussi les données)
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: filemoica-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-filemoica}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-filemoica}
+      POSTGRES_DB: ${POSTGRES_DB:-filemoica}
+    ports:
+      # 5433 côté hôte, pas 5432 : un PostgreSQL installé sur le poste occupe
+      # déjà le port standard. Le conteneur, lui, écoute bien sur 5432 en
+      # interne — l'écart ne concerne que la machine de développement.
+      - '${POSTGRES_PORT:-5433}:5432'
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # Crée la base de test au premier démarrage du volume.
+      - ./docker/init-test-db.sh:/docker-entrypoint-initdb.d/init-test-db.sh:ro
+    healthcheck:
+      # Le service applicatif attendra cette sonde avant de démarrer, et c'est
+      # aussi elle qui rendra visible une base tombée lors du test d'incident.
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-filemoica}']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  db-data:

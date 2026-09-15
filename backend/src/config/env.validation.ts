@@ -51,6 +51,13 @@ export class EnvironmentVariables {
   @Max(65535)
   PORT: number = 3000;
 
+  /**
+   * Version applicative exposée par `/health`. Renseignée au déploiement par
+   * SRC (tag git), pour pouvoir vérifier quelle version tourne réellement.
+   */
+  @IsString()
+  APP_VERSION: string = 'dev';
+
   /** Chaîne de connexion PostgreSQL, consommée par Prisma. */
   @Matches(/^postgres(ql)?:\/\/.+/, {
     message: 'DATABASE_URL doit être une URL postgresql://',

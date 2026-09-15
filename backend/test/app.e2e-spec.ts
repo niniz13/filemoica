@@ -4,6 +4,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { configureApp } from './../src/app.setup';
+import { PrismaService } from './../src/prisma/prisma.service';
 
 /**
  * Contrôleur existant uniquement pour ces tests.
@@ -40,7 +41,16 @@ describe('Socle applicatif (e2e)', () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
       controllers: [SocleTestController],
-    }).compile();
+    })
+      // Ces tests portent sur le socle HTTP, pas sur les données : la base est
+      // remplacée par un double pour qu'ils tournent sans PostgreSQL.
+      .overrideProvider(PrismaService)
+      .useValue({
+        isReachable: jest.fn().mockResolvedValue(true),
+        $connect: jest.fn(),
+        $disconnect: jest.fn(),
+      })
+      .compile();
 
     app = moduleFixture.createNestApplication();
     // Même configuration qu'en production : sans cet appel, les tests
@@ -55,7 +65,11 @@ describe('Socle applicatif (e2e)', () => {
 
   describe('Préfixe des routes', () => {
     it('expose les routes métier sous /api', async () => {
-      await request(app.getHttpServer()).get('/api').expect(200);
+      await request(app.getHttpServer()).get('/api/socle-test').expect(200);
+    });
+
+    it('n\'expose pas les routes métier hors du préfixe', async () => {
+      await request(app.getHttpServer()).get('/socle-test').expect(404);
     });
   });
 
