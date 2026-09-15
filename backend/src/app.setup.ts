@@ -1,5 +1,6 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import cookieParser from 'cookie-parser';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { CsrfGuard } from './common/guards/csrf.guard';
 import type { EnvironmentVariables } from './config/env.validation';
@@ -19,6 +20,10 @@ export function configureApp(app: INestApplication): void {
 
   // `/health` reste hors préfixe : c'est l'URL que SRC branche sur sa sonde.
   app.setGlobalPrefix('api', { exclude: ['health'] });
+
+  // Les jetons de session vivent dans des cookies : sans cet analyseur,
+  // `request.cookies` reste vide et personne n'est jamais authentifié.
+  app.use(cookieParser());
 
   app.useGlobalPipes(
     new ValidationPipe({

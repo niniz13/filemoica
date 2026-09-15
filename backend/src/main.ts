@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
 import type { EnvironmentVariables } from './config/env.validation';
+import { API_DOCS_PATH, setupSwagger } from './swagger';
 
 /**
  * Point d'entrée du service.
@@ -20,9 +21,22 @@ async function bootstrap(): Promise<void> {
   const config = app.get(ConfigService<EnvironmentVariables, true>);
   const port = config.get('PORT', { infer: true });
 
+  // Uniquement dans `main.ts` : la documentation n'a pas sa place dans les
+  // tests, où elle ne ferait qu'allonger chaque démarrage d'application.
+  if (config.get('ENABLE_API_DOCS', { infer: true })) {
+    setupSwagger(app);
+  }
+
   await app.listen(port);
 
   Logger.log(`Service démarré sur le port ${port}`, 'Bootstrap');
+
+  if (config.get('ENABLE_API_DOCS', { infer: true })) {
+    Logger.log(
+      `Documentation de l'API : http://localhost:${port}/${API_DOCS_PATH}`,
+      'Bootstrap',
+    );
+  }
 }
 
 void bootstrap();
