@@ -1,5 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  ArrayUnique,
+  IsArray,
   IsEmail,
   IsInt,
   IsOptional,
@@ -37,10 +41,27 @@ const MIN_PASSWORD_LENGTH = 6;
 
 const MAX_PASSWORD_LENGTH = 128;
 
+/**
+ * Nombre maximal de fichiers derrière un même lien.
+ *
+ * Une session de dépôt reste une poignée de fichiers : au-delà, mieux vaut
+ * plusieurs liens que de rendre un seul jeton disproportionnellement précieux.
+ */
+const MAX_FILES_PER_SHARE = 50;
+
 export class CreateShareDto {
-  @ApiProperty({ format: 'uuid', description: 'Fichier à partager.' })
-  @IsUUID()
-  fileId: string;
+  @ApiProperty({
+    type: [String],
+    format: 'uuid',
+    description:
+      'Fichiers à partager derrière ce lien — un seul jeton pour toute la session de dépôt.',
+  })
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Au moins un fichier est requis.' })
+  @ArrayMaxSize(MAX_FILES_PER_SHARE)
+  @ArrayUnique()
+  @IsUUID('4', { each: true })
+  fileIds: string[];
 
   @ApiPropertyOptional({
     format: 'email',
@@ -80,6 +101,7 @@ export class CreateShareDto {
 
 export {
   DEFAULT_HOURS,
+  MAX_FILES_PER_SHARE,
   MAX_HOURS,
   MAX_PASSWORD_LENGTH,
   MIN_HOURS,

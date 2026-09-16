@@ -45,6 +45,8 @@ export function configureApp(app: INestApplication): void {
     origin: config.get('FRONTEND_ORIGIN', { infer: true }),
     // Indispensable pour que le navigateur accepte d'envoyer nos cookies.
     credentials: true,
-    allowedHeaders: ['Content-Type', 'X-Requested-With'],
+    // X-Share-Password : mot de passe d'un lien de partage, transmis en
+    // en-tête par le front lors du téléchargement (voir DownloadController).
+    allowedHeaders: ['Content-Type', 'X-Requested-With', 'X-Share-Password'],
   });
 }

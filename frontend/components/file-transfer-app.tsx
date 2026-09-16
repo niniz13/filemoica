@@ -1,70 +1,154 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent } from "react";
+import { ApiError, api, type CurrentUser, type FileItem, type Quota } from "@/lib/api";
+import ShareQrCode from "@/components/share-qr-code";
 import {
-  CAT,
-  type Screen,
+  FALLBACK_TILE,
   TILES,
   createEngine,
   dropPacket,
   drawEngine,
-  drawQR,
-  fmt,
+  extFromName,
+  fmtBytes,
   stepEngine,
+  type EnginePhase,
 } from "@/lib/file-transfer-engine";
 
 const ACCENT = "#5b4bff";
 const WAVE_INTENSITY = 1;
-const DEMO_SPEED = 1;
 
-type Expiry = "7 days" | "24 hours";
+type Screen = "signin" | "drop" | "files" | "account";
+type AuthMode = "login" | "register";
 
-const NAV: { id: Screen; label: string; meta: string }[] = [
-  { id: "drop", label: "Send", meta: "" },
-  { id: "sent", label: "Transfers", meta: "3" },
-  { id: "receive", label: "Received", meta: "1" },
-  { id: "signin", label: "Account", meta: "" },
+interface UploadItem {
+  id: string;
+  fileId?: string;
+  name: string;
+  sizeBytes: number;
+  progress: number;
+  status: "uploading" | "done" | "error";
+  error?: string;
+}
+
+/** Un lien de partage créé pour toute une sélection de fichiers de la session. */
+interface SessionShare {
+  id: string;
+  url: string;
+  fileNames: string[];
+}
+
+/** Durée de validité par défaut d'un lien de partage. */
+const DEFAULT_SHARE_HOURS = 72;
+
+const NAV: { id: Screen; label: string }[] = [
+  { id: "drop", label: "Envoyer" },
+  { id: "files", label: "Mes fichiers" },
+  { id: "account", label: "Compte" },
 ];
 
 export default function FileTransferApp() {
   const [screen, setScreen] = useState<Screen>("signin");
-  const [fileIdxs, setFileIdxs] = useState<number[]>([0, 1, 2]);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [user, setUser] = useState<CurrentUser | null>(null);
+
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+
+  const [quota, setQuota] = useState<Quota | null>(null);
+  const [files, setFiles] = useState<FileItem[]>([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [filesError, setFilesError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const [uploads, setUploads] = useState<UploadItem[]>([]);
+  const [sessionShares, setSessionShares] = useState<SessionShare[]>([]);
+  const [claimedFileIds, setClaimedFileIds] = useState<Set<string>>(new Set());
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [copiedShareId, setCopiedShareId] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
   const [narrow, setNarrow] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [draining, setDraining] = useState(false);
-  const [expiry, setExpiry] = useState<Expiry>("7 days");
-  const [pwd, setPwd] = useState(false);
-  const [burn, setBurn] = useState(true);
-  const [live, setLive] = useState({ p: 0, level: 0, t: 0 });
+  const [live, setLive] = useState({ level: 0, t: 0 });
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef(createEngine());
-  const liveRef = useRef({ screen, fileCount: fileIdxs.length, draining });
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  const isUploading = uploads.some((u) => u.status === "uploading");
+  const quotaFraction = quota && quota.limitBytes > 0 ? quota.usedBytes / quota.limitBytes : 0;
+
+  const liveCtxRef = useRef<{ phase: EnginePhase; quotaFraction: number }>({
+    phase: "signin",
+    quotaFraction: 0,
+  });
 
   useEffect(() => {
-    liveRef.current = { screen, fileCount: fileIdxs.length, draining };
-  }, [screen, fileIdxs.length, draining]);
+    const phase: EnginePhase = screen === "signin" ? "signin" : isUploading ? "active" : "idle";
+    liveCtxRef.current = { phase, quotaFraction };
+  }, [screen, isUploading, quotaFraction]);
+
+  const refreshQuota = useCallback(async () => {
+    try {
+      setQuota(await api.quota());
+    } catch {
+      // le quota n'est pas critique pour l'affichage, on ignore l'échec
+    }
+  }, []);
+
+  const refreshFiles = useCallback(async () => {
+    setFilesLoading(true);
+    try {
+      setFiles(await api.listFiles());
+      setFilesError(null);
+    } catch (err) {
+      setFilesError(err instanceof ApiError ? err.message : "Impossible de charger les fichiers.");
+    } finally {
+      setFilesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await api.me();
+        if (cancelled) return;
+        setUser(me);
+        setScreen("drop");
+        void refreshQuota();
+        void refreshFiles();
+      } catch {
+        if (!cancelled) setUser(null);
+      } finally {
+        if (!cancelled) setAuthChecked(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshQuota, refreshFiles]);
 
   useEffect(() => {
     const engine = engineRef.current;
     let last = performance.now();
 
-    function completeSending() {
-      engine.p = 1;
-      setScreen("sent");
-      setCopied(false);
-    }
-
     function loop(now: number) {
       const dt = Math.min(20, now - last);
       last = now;
       engine.t += dt;
-      stepEngine(engine, dt, liveRef.current, WAVE_INTENSITY, DEMO_SPEED, completeSending);
+      stepEngine(engine, dt, liveCtxRef.current, WAVE_INTENSITY);
       const canvas = canvasRef.current;
       if (canvas) drawEngine(engine, canvas, ACCENT);
       if (now - engine.lastUI > 100) {
         engine.lastUI = now;
-        setLive({ p: engine.p, level: engine.level ?? 0, t: engine.t });
+        setLive({ level: engine.level ?? 0, t: engine.t });
       }
       engine.raf = requestAnimationFrame(loop);
     }
@@ -81,384 +165,465 @@ export default function FileTransferApp() {
     };
   }, []);
 
-  const handleQrRef = useCallback((el: HTMLCanvasElement | null) => {
-    if (el) drawQR(el);
-  }, []);
-
-  function goToScreen(next: Screen) {
-    if (next === screen) return;
-    const engine = engineRef.current;
-    if (next === "drop") engine.p = 0;
-    if (next === "sending") {
-      engine.p = 0;
-      fileIdxs.forEach((fi, i) => {
-        setTimeout(() => dropPacket(engine, CAT[fi].ext, CAT[fi].mb), i * 260);
-      });
+  async function submitAuth(e: FormEvent) {
+    e.preventDefault();
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      if (authMode === "register") {
+        await api.register(email, password);
+      }
+      const loggedIn = await api.login(email, password);
+      setUser(loggedIn);
+      setScreen("drop");
+      setPassword("");
+      void refreshQuota();
+      void refreshFiles();
+    } catch (err) {
+      setAuthError(err instanceof ApiError ? err.message : "Une erreur est survenue.");
+    } finally {
+      setAuthBusy(false);
     }
-    if (next === "sent") engine.p = 1;
-    if (next === "receive") {
-      engine.p = 1;
-      setDraining(false);
+  }
+
+  async function handleLogout() {
+    try {
+      await api.logout();
+    } catch {
+      // on ferme la session côté client même si l'appel échoue
     }
-    setScreen(next);
-    setCopied(false);
-    setLive((v) => ({ ...v, p: engine.p }));
+    setUser(null);
+    setQuota(null);
+    setFiles([]);
+    setUploads([]);
+    setSessionShares([]);
+    setClaimedFileIds(new Set());
+    setShareError(null);
+    setEmail("");
+    setPassword("");
+    setAuthMode("login");
+    setScreen("signin");
   }
 
-  function addFile() {
-    if (fileIdxs.length >= CAT.length) return;
-    const nx = fileIdxs.length;
-    setFileIdxs((prev) => [...prev, nx]);
-    const f = CAT[nx];
-    dropPacket(engineRef.current, f.ext, f.mb);
-  }
-
-  function addFolder() {
-    const add = [3, 4, 5].filter((i) => !fileIdxs.includes(i)).slice(0, 2);
-    if (!add.length) return;
-    setFileIdxs((prev) => [...prev, ...add]);
-    add.forEach((i, k) => {
-      setTimeout(() => dropPacket(engineRef.current, CAT[i].ext, CAT[i].mb), k * 220);
-    });
-  }
-
-  function startSend() {
-    goToScreen("sending");
-  }
-  function startDrain() {
-    setDraining(true);
-  }
-  function resetReceive() {
-    engineRef.current.p = 1;
-    setDraining(false);
-    setLive((v) => ({ ...v, p: 1 }));
-  }
-  function resetAll() {
+  function uploadOne(file: File) {
+    const id = crypto.randomUUID();
+    setUploads((prev) => [{ id, name: file.name, sizeBytes: file.size, progress: 0, status: "uploading" }, ...prev]);
+    dropPacket(engineRef.current, extFromName(file.name), file.size / (1024 * 1024));
     engineRef.current.p = 0;
-    setFileIdxs([0, 1, 2]);
-    setScreen("drop");
-    setCopied(false);
-    setLive((v) => ({ ...v, p: 0 }));
+
+    api
+      .uploadFile(file, (fraction) => {
+        engineRef.current.p = fraction;
+        setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, progress: fraction } : u)));
+      })
+      .then((uploaded) => {
+        setUploads((prev) =>
+          prev.map((u) => (u.id === id ? { ...u, fileId: uploaded.id, progress: 1, status: "done" } : u)),
+        );
+        setFiles((prev) => [uploaded, ...prev]);
+        void refreshQuota();
+      })
+      .catch((err) => {
+        setUploads((prev) =>
+          prev.map((u) =>
+            u.id === id
+              ? {
+                  ...u,
+                  status: "error",
+                  error: err instanceof ApiError ? err.message : "Échec de l'envoi.",
+                }
+              : u,
+          ),
+        );
+      });
   }
-  function copyLink() {
-    setCopied(true);
-    if (typeof navigator !== "undefined" && navigator.clipboard) {
-      navigator.clipboard.writeText("https://filemoca.app/d/7QX-4KP-9ZB").catch(() => {});
+
+  function handleFilesSelected(list: FileList | File[]) {
+    Array.from(list).forEach(uploadOne);
+  }
+
+  async function handleDelete(id: string) {
+    setDeletingId(id);
+    try {
+      await api.deleteFile(id);
+      setFiles((prev) => prev.filter((f) => f.id !== id));
+      void refreshQuota();
+    } catch {
+      // on laisse le fichier dans la liste, l'utilisateur peut retenter
+    } finally {
+      setDeletingId(null);
     }
   }
-  const p = live.p;
-  const level = live.level;
-  const files = fileIdxs.map((i) => CAT[i]);
-  const totalMb = files.reduce((a, f) => a + f.mb, 0);
-  const pct =
-    screen === "sending" ? p : screen === "sent" ? 1 : screen === "receive" ? p : Math.min(0.99, totalMb / 12000);
+
+  function copyShareLink(shareId: string, url: string) {
+    setCopiedShareId(shareId);
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(url).catch(() => {});
+    }
+    setTimeout(() => setCopiedShareId((current) => (current === shareId ? null : current)), 2000);
+  }
+
+  async function createShareLink() {
+    const pending = uploads.filter(
+      (u) => u.status === "done" && u.fileId && !claimedFileIds.has(u.fileId),
+    );
+    if (pending.length === 0) return;
+
+    setShareBusy(true);
+    setShareError(null);
+    try {
+      const share = await api.createShare({
+        fileIds: pending.map((u) => u.fileId!),
+        expiresInHours: DEFAULT_SHARE_HOURS,
+      });
+      const url = `${window.location.origin}/d/${share.token}`;
+      setSessionShares((prev) => [
+        { id: share.id, url, fileNames: share.files.map((f) => f.fileName) },
+        ...prev,
+      ]);
+      setClaimedFileIds((prev) => {
+        const next = new Set(prev);
+        for (const u of pending) next.add(u.fileId!);
+        return next;
+      });
+    } catch (err) {
+      setShareError(err instanceof ApiError ? err.message : "Échec de la création du lien.");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files?.length) handleFilesSelected(e.dataTransfer.files);
+  }
+  function onDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(true);
+  }
+  function onDragLeave() {
+    setIsDragging(false);
+  }
 
   const isSignin = screen === "signin";
   const isDrop = screen === "drop";
-  const isSending = screen === "sending";
-  const isSent = screen === "sent";
-  const isReceive = screen === "receive";
+  const isFiles = screen === "files";
+  const isAccount = screen === "account";
   const wide = !narrow;
 
-  const rows = files.map((f, i) => {
-    let prog = 0;
-    let status = "Waiting";
-    let statusColor = "#6b7178";
-    if (isDrop) {
-      prog = 1;
-      status = "Ready";
-      statusColor = "#6b7178";
-    } else if (isSending) {
-      const seg = 1 / files.length;
-      const local = (p - i * seg) / seg;
-      prog = Math.max(0, Math.min(1, local));
-      status = prog >= 1 ? "Uploaded" : prog <= 0 ? "Waiting" : Math.round(prog * 100) + "%";
-      statusColor = prog >= 1 ? "#0b6b45" : prog > 0 ? "#5b4bff" : "#6b7178";
-    } else if (isSent) {
-      prog = 1;
-      status = "Sent";
-      statusColor = "#0b6b45";
-    } else if (isReceive) {
-      const seg = 1 / files.length;
-      const local = (1 - p - i * seg) / seg;
-      prog = draining ? Math.max(0, Math.min(1, local)) : 0;
-      status = !draining ? "Ready" : prog >= 1 ? "Saved" : Math.round(prog * 100) + "%";
-      statusColor = prog >= 1 ? "#0b6b45" : draining ? "#5b4bff" : "#6b7178";
-    }
-    const tile = TILES[f.ext] || ["#efece7", "#6b7178"];
-    return {
-      key: f.name + i,
-      name: f.name,
-      ext: f.ext,
-      sub: f.kind + " · " + fmt(f.mb),
-      status,
-      statusColor,
-      tileBg: tile[0],
-      tileFg: tile[1],
-    };
-  });
+  const pendingShareCount = uploads.filter(
+    (u) => u.status === "done" && u.fileId && !claimedFileIds.has(u.fileId),
+  ).length;
 
-  const mbDone = totalMb * (isReceive ? 1 - p : p);
-  const rate = 86 + Math.sin(live.t / 700) * 14;
-
+  const level = live.level;
   const topInk = level > 0.82 ? "#ffffff" : "#16181c";
   const topMuted = level > 0.82 ? "#ffffff" : "#6b7178";
   const botInk = level > 0.2 ? "#ffffff" : "#16181c";
-  const botMuted = level > 0.2 ? "#ffffff" : "#6b7178";
 
-  const headTitle = isDrop ? "New transfer" : isSending ? "Sending" : isSent ? "All done" : "Sent to you";
+  const pctLabel = quota ? Math.round(quotaFraction * 100) + "%" : "—";
+  const quotaLine = quota
+    ? `${fmtBytes(quota.usedBytes)} sur ${fmtBytes(quota.limitBytes)}`
+    : "Chargement du quota…";
+
+  const headTitle = isDrop ? "Envoyer des fichiers" : isFiles ? "Mes fichiers" : "Mon compte";
   const headSub = isDrop
-    ? "Up to 100 GB, no signup needed"
-    : isSending
-      ? "You can pause and resume anytime"
-      : isSent
-        ? "Expires in " + expiry
-        : "2 minutes ago";
+    ? quota
+      ? `${fmtBytes(quota.remainingBytes)} restants ce mois-ci`
+      : "Chiffrement au repos, sans limite de taille annoncée côté design"
+    : isFiles
+      ? `${files.length} fichier${files.length > 1 ? "s" : ""}`
+      : user?.email ?? "";
 
-  const drainLabel = draining ? (p <= 0 ? "Saved to your device" : "Downloading…") : "Download all";
-  const receiveHead = draining ? (p <= 0 ? "All done. Enjoy." : "Downloading your files.") : "3 files waiting for you.";
-
-  const opts = [
-    {
-      label: expiry === "7 days" ? "Expires in 7 days" : "Expires in 24 hours",
-      bg: "#f6f4f0",
-      fg: "#3b4046",
-      onClick: () => setExpiry(expiry === "7 days" ? "24 hours" : "7 days"),
-    },
-    {
-      label: "Password",
-      bg: pwd ? "#ece9ff" : "#f6f4f0",
-      fg: pwd ? "#3527cc" : "#3b4046",
-      onClick: () => setPwd((v) => !v),
-    },
-    {
-      label: "Delete after download",
-      bg: burn ? "#ece9ff" : "#f6f4f0",
-      fg: burn ? "#3527cc" : "#3b4046",
-      onClick: () => setBurn((v) => !v),
-    },
-  ];
-
-  const sentMeta = [
-    { k: "Size", v: fmt(totalMb) },
-    { k: "Expires", v: expiry },
-    { k: "Password", v: pwd ? "On" : "Off" },
-    { k: "Delete after download", v: burn ? "On" : "Off" },
-  ];
-
-  const recvMeta = [
-    { k: "Files", v: String(files.length) },
-    { k: "Size", v: fmt(totalMb) },
-    { k: "Expires", v: "In 6 days" },
-    { k: "Downloads left", v: "1" },
-  ];
-
-  const listMeta = files.length + " files · " + fmt(totalMb);
-  const pctLabel = Math.round(pct * 100) + "%";
-  const pctWidth = Math.round(p * 100) + "%";
-  const stateLabel = isDrop
-    ? "Ready to send"
-    : isSending
-      ? "Uploading"
-      : isSent
-        ? "Sent"
-        : isReceive
-          ? draining
-            ? "Downloading"
-            : "Ready"
-          : "";
-  const sentLabel = fmt(mbDone) + " of " + fmt(totalMb);
-  const etaLabel = isSending ? Math.max(1, Math.round((1 - p) * 74)) + " seconds left" : "";
-  const sendingNote =
-    "Uploading at " + rate.toFixed(0) + " MB/s. You can close this tab, we will email you the link when it is done.";
+  const initials = (user?.email ?? "?").slice(0, 2).toUpperCase();
 
   const sansFont = "var(--font-space-grotesk), system-ui, sans-serif";
-  const monoFont = "var(--font-ibm-plex-mono), monospace";
+
+  if (!authChecked) {
+    return <div style={{ minHeight: "100vh", background: "#ffffff" }} />;
+  }
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "#ffffff" }}>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#ffffff", overflow: "hidden" }}>
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-          {isSignin && (
-            <div style={{ flex: 1, display: "flex", flexWrap: "wrap", minHeight: 0 }}>
-              <div
-                style={{
-                  flex: "1 1 320px",
-                  minWidth: 280,
-                  position: "relative",
-                  minHeight: 340,
-                  overflow: "hidden",
-                  background: "#f1eee9",
-                }}
-              >
-                <canvas
-                  ref={canvasRef}
-                  style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block" }}
-                />
-                <div style={{ position: "absolute", left: 40, top: 40, right: 40, zIndex: 2 }}>
-                  <div style={{ font: `500 17px/1 ${sansFont}`, letterSpacing: "-.01em" }}>File Moi Ça</div>
-                  <p
-                    style={{
-                      margin: "26px 0 0",
-                      maxWidth: 320,
-                      font: `300 34px/1.14 ${sansFont}`,
-                      letterSpacing: "-.03em",
-                      color: "#16181c",
-                    }}
-                  >
-                    Send big files in one drop.
-                  </p>
-                  <p
-                    style={{
-                      margin: "16px 0 0",
-                      maxWidth: 290,
-                      font: `400 15px/1.55 ${sansFont}`,
-                      color: "#6b7178",
-                    }}
-                  >
-                    Drop your files, get a link, share it anywhere. Up to 100 GB per transfer.
-                  </p>
-                </div>
-              </div>
-              <div
-                style={{
-                  flex: "1 1 360px",
-                  minWidth: 300,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "56px 40px",
-                }}
-              >
-                <div style={{ width: "100%", maxWidth: 330, animation: "rise .5s ease both" }}>
-                  <h1 style={{ margin: 0, font: `400 28px/1.15 ${sansFont}`, letterSpacing: "-.03em" }}>
-                    Welcome back
-                  </h1>
-                  <div style={{ marginTop: 32, display: "flex", flexDirection: "column", gap: 16 }}>
-                    <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <span style={{ font: `400 13px/1 ${sansFont}`, color: "#6b7178" }}>Email</span>
-                      <input
-                        type="text"
-                        defaultValue="amelie@studiolune.fr"
-                        className="ftc-input"
-                        style={{
-                          padding: "14px 15px",
-                          borderRadius: 12,
-                          color: "#16181c",
-                          font: `400 15px/1 ${sansFont}`,
-                        }}
-                      />
-                    </label>
-                    <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <span style={{ font: `400 13px/1 ${sansFont}`, color: "#6b7178" }}>Password</span>
-                      <input
-                        type="password"
-                        defaultValue="mypassword123"
-                        className="ftc-input"
-                        style={{
-                          padding: "14px 15px",
-                          borderRadius: 12,
-                          color: "#16181c",
-                          font: `400 15px/1 ${sansFont}`,
-                        }}
-                      />
-                    </label>
-                  </div>
-                  <button
-                    onClick={() => goToScreen("drop")}
-                    className="ftc-btn-primary"
-                    style={{
-                      marginTop: 26,
-                      width: "100%",
-                      padding: 16,
-                      borderRadius: 99,
-                      font: `500 15px/1 ${sansFont}`,
-                    }}
-                  >
-                    Continue
-                  </button>
-                  <button
-                    onClick={() => goToScreen("drop")}
-                    className="ftc-btn-text"
-                    style={{ marginTop: 10, width: "100%", padding: 15, borderRadius: 99, font: `400 14px/1 ${sansFont}` }}
-                  >
-                    Email me a sign-in link
-                  </button>
-                </div>
+        {isSignin && (
+          <div style={{ flex: 1, display: "flex", flexWrap: "wrap", minHeight: 0 }}>
+            <div
+              style={{
+                flex: "1 1 320px",
+                minWidth: 280,
+                position: "relative",
+                minHeight: 340,
+                overflow: "hidden",
+                background: "#f1eee9",
+              }}
+            >
+              <canvas
+                ref={canvasRef}
+                style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block" }}
+              />
+              <div style={{ position: "absolute", left: 40, top: 40, right: 40, zIndex: 2 }}>
+                <div style={{ font: `500 17px/1 ${sansFont}`, letterSpacing: "-.01em" }}>File Moi Ça</div>
+                <p
+                  style={{
+                    margin: "26px 0 0",
+                    maxWidth: 320,
+                    font: `300 34px/1.14 ${sansFont}`,
+                    letterSpacing: "-.03em",
+                    color: "#16181c",
+                  }}
+                >
+                  Send big files in one drop.
+                </p>
+                <p style={{ margin: "16px 0 0", maxWidth: 290, font: `400 15px/1.55 ${sansFont}`, color: "#6b7178" }}>
+                  Drop your files, get a link, share it anywhere. Up to 100 GB per transfer.
+                </p>
               </div>
             </div>
-          )}
-
-          {!isSignin && (
-            <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-              {wide && (
-                <div style={{ width: 216, flex: "none", padding: "32px 20px", display: "flex", flexDirection: "column", background: "#fbfaf8" }}>
-                  <div style={{ font: `500 16px/1 ${sansFont}`, letterSpacing: "-.01em", paddingLeft: 10 }}>File Moi Ça</div>
-                  <div style={{ marginTop: 32, display: "flex", flexDirection: "column", gap: 4 }}>
-                    {NAV.map((n) => (
-                      <button
-                        key={n.id}
-                        onClick={() => goToScreen(n.id)}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 8,
-                          padding: "11px 12px",
-                          border: "none",
-                          borderRadius: 11,
-                          background: screen === n.id ? "#ece9ff" : "transparent",
-                          color: screen === n.id ? "#3527cc" : "#3b4046",
-                          font: `400 14.5px/1 ${sansFont}`,
-                          cursor: "pointer",
-                          textAlign: "left",
-                        }}
-                      >
-                        {n.label}
-                        <span style={{ font: `400 12.5px/1 ${sansFont}`, color: "#565c63" }}>{n.meta}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <span style={{ flex: 1 }} />
-                  <div style={{ padding: "0 12px" }}>
-                    <div style={{ font: `400 13px/1 ${sansFont}`, color: "#6b7178" }}>12 GB of 100 GB</div>
-                    <div style={{ marginTop: 10, height: 5, borderRadius: 99, background: "rgba(22,24,28,.08)", overflow: "hidden" }}>
-                      <div style={{ height: "100%", width: "12%", background: "#5b4bff", borderRadius: 99 }} />
+            <div
+              style={{
+                flex: "1 1 360px",
+                minWidth: 300,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "56px 40px",
+              }}
+            >
+              <form
+                onSubmit={submitAuth}
+                style={{ width: "100%", maxWidth: 330, animation: "rise .5s ease both" }}
+              >
+                <h1 style={{ margin: 0, font: `400 28px/1.15 ${sansFont}`, letterSpacing: "-.03em" }}>
+                  {authMode === "login" ? "Welcome back" : "Créer un compte"}
+                </h1>
+                <div style={{ marginTop: 32, display: "flex", flexDirection: "column", gap: 16 }}>
+                  <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <span style={{ font: `400 13px/1 ${sansFont}`, color: "#6b7178" }}>Email</span>
+                    <input
+                      type="email"
+                      required
+                      autoComplete="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="ftc-input"
+                      style={{ padding: "14px 15px", borderRadius: 12, color: "#16181c", font: `400 15px/1 ${sansFont}` }}
+                    />
+                  </label>
+                  <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <span style={{ font: `400 13px/1 ${sansFont}`, color: "#6b7178" }}>Password</span>
+                    <input
+                      type="password"
+                      required
+                      minLength={authMode === "register" ? 12 : undefined}
+                      autoComplete={authMode === "login" ? "current-password" : "new-password"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="ftc-input"
+                      style={{ padding: "14px 15px", borderRadius: 12, color: "#16181c", font: `400 15px/1 ${sansFont}` }}
+                    />
+                  </label>
+                  {authMode === "register" && (
+                    <div style={{ font: `400 12.5px/1.4 ${sansFont}`, color: "#6b7178" }}>
+                      Au moins 12 caractères.
                     </div>
+                  )}
+                </div>
+
+                {authError && (
+                  <div style={{ marginTop: 16, font: `400 13.5px/1.4 ${sansFont}`, color: "#d2493c" }}>
+                    {authError}
                   </div>
-                  <div style={{ marginTop: 26, display: "flex", alignItems: "center", gap: 10, padding: "0 12px" }}>
-                    <div
+                )}
+
+                <button
+                  type="submit"
+                  disabled={authBusy}
+                  className="ftc-btn-primary"
+                  style={{
+                    marginTop: 26,
+                    width: "100%",
+                    padding: 16,
+                    borderRadius: 99,
+                    font: `500 15px/1 ${sansFont}`,
+                    opacity: authBusy ? 0.7 : 1,
+                  }}
+                >
+                  {authBusy ? "Un instant…" : authMode === "login" ? "Continue" : "Créer mon compte"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode((m) => (m === "login" ? "register" : "login"));
+                    setAuthError(null);
+                  }}
+                  className="ftc-btn-text"
+                  style={{ marginTop: 10, width: "100%", padding: 15, borderRadius: 99, font: `400 14px/1 ${sansFont}` }}
+                >
+                  {authMode === "login" ? "Pas de compte ? Créer un compte" : "Déjà un compte ? Se connecter"}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {!isSignin && (
+          <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+            {wide && (
+              <div
+                style={{
+                  width: 216,
+                  flex: "none",
+                  padding: "32px 20px",
+                  display: "flex",
+                  flexDirection: "column",
+                  background: "#fbfaf8",
+                }}
+              >
+                <div style={{ font: `500 16px/1 ${sansFont}`, letterSpacing: "-.01em", paddingLeft: 10 }}>
+                  File Moi Ça
+                </div>
+                <div style={{ marginTop: 32, display: "flex", flexDirection: "column", gap: 4 }}>
+                  {NAV.map((n) => (
+                    <button
+                      key={n.id}
+                      onClick={() => setScreen(n.id)}
                       style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: "50%",
-                        background: "#ece9ff",
                         display: "flex",
                         alignItems: "center",
-                        justifyContent: "center",
-                        font: `500 12.5px/1 ${sansFont}`,
-                        color: "#5b4bff",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        padding: "11px 12px",
+                        border: "none",
+                        borderRadius: 11,
+                        background: screen === n.id ? "#ece9ff" : "transparent",
+                        color: screen === n.id ? "#3527cc" : "#3b4046",
+                        font: `400 14.5px/1 ${sansFont}`,
+                        cursor: "pointer",
+                        textAlign: "left",
                       }}
                     >
-                      AM
-                    </div>
-                    <div style={{ font: `400 13px/1.3 ${sansFont}`, color: "#6b7178", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-                      Amélie
-                    </div>
+                      {n.label}
+                    </button>
+                  ))}
+                </div>
+                <span style={{ flex: 1 }} />
+                <div style={{ padding: "0 12px" }}>
+                  <div style={{ font: `400 13px/1 ${sansFont}`, color: "#6b7178" }}>{quotaLine}</div>
+                  <div style={{ marginTop: 10, height: 5, borderRadius: 99, background: "rgba(22,24,28,.08)", overflow: "hidden" }}>
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${Math.min(100, Math.round(quotaFraction * 100))}%`,
+                        background: "#5b4bff",
+                        borderRadius: 99,
+                      }}
+                    />
                   </div>
                 </div>
-              )}
+                <button
+                  onClick={() => setScreen("account")}
+                  style={{
+                    marginTop: 26,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "0 12px",
+                    border: "none",
+                    background: "transparent",
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: "50%",
+                      background: "#ece9ff",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      font: `500 12.5px/1 ${sansFont}`,
+                      color: "#5b4bff",
+                      flex: "none",
+                    }}
+                  >
+                    {initials}
+                  </div>
+                  <div
+                    style={{
+                      font: `400 13px/1.3 ${sansFont}`,
+                      color: "#6b7178",
+                      minWidth: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {user?.email}
+                  </div>
+                </button>
+              </div>
+            )}
 
-              <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap", padding: "32px 32px 22px" }}>
-                  <div style={{ font: `400 22px/1.15 ${sansFont}`, letterSpacing: "-.025em" }}>{headTitle}</div>
-                  <div style={{ font: `400 14px/1.4 ${sansFont}`, color: "#6b7178" }}>{headSub}</div>
-                </div>
+            <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap", padding: "32px 32px 22px" }}>
+                <div style={{ font: `400 22px/1.15 ${sansFont}`, letterSpacing: "-.025em" }}>{headTitle}</div>
+                <div style={{ font: `400 14px/1.4 ${sansFont}`, color: "#6b7178" }}>{headSub}</div>
+              </div>
 
-                <div style={{ flex: 1, display: "flex", flexWrap: "wrap", minHeight: 0, alignItems: "stretch", gap: 0 }}>
-                  <div style={{ flex: "1 1 400px", minWidth: 290, position: "relative", minHeight: 380, overflow: "hidden", background: "#f1eee9" }}>
+              {isDrop && (
+                <div
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    flexDirection: narrow ? "column" : "row",
+                    minHeight: 0,
+                    minWidth: 0,
+                    alignItems: "stretch",
+                    gap: 0,
+                  }}
+                >
+                  <div
+                    onDrop={onDrop}
+                    onDragOver={onDragOver}
+                    onDragLeave={onDragLeave}
+                    style={{
+                      flex: "1 1 400px",
+                      minWidth: 290,
+                      position: "relative",
+                      minHeight: 380,
+                      overflow: "hidden",
+                      background: isDragging ? "#e9e4da" : "#f1eee9",
+                    }}
+                  >
                     <canvas
                       ref={canvasRef}
                       style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block" }}
+                    />
+
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      hidden
+                      onChange={(e) => {
+                        if (e.target.files) handleFilesSelected(e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                    <input
+                      ref={folderInputRef}
+                      type="file"
+                      multiple
+                      hidden
+                      // @ts-expect-error attribut non standard, supporté par les navigateurs Chromium/Firefox/Safari
+                      webkitdirectory=""
+                      onChange={(e) => {
+                        if (e.target.files) handleFilesSelected(e.target.files);
+                        e.target.value = "";
+                      }}
                     />
 
                     <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", padding: 32, pointerEvents: "none" }}>
@@ -474,252 +639,259 @@ export default function FileTransferApp() {
                           >
                             {pctLabel}
                           </div>
-                          <div style={{ marginTop: 8, font: `400 14px/1 ${sansFont}`, color: topMuted }}>{stateLabel}</div>
+                          <div style={{ marginTop: 8, font: `400 14px/1 ${sansFont}`, color: topMuted }}>
+                            {isUploading ? "Envoi en cours" : "Quota utilisé"}
+                          </div>
                         </div>
                       </div>
                       <span style={{ flex: 1 }} />
 
-                      {isDrop && (
-                        <div style={{ pointerEvents: "auto", alignSelf: "flex-start", maxWidth: 340 }}>
-                          <div style={{ font: `300 30px/1.14 ${sansFont}`, letterSpacing: "-.03em", color: botInk }}>
-                            Drop your files here.
-                          </div>
-                          <div style={{ display: "flex", gap: 10, marginTop: 22, flexWrap: "wrap" }}>
-                            <button
-                              onClick={addFile}
-                              className="ftc-btn-primary"
-                              style={{ padding: "14px 22px", borderRadius: 99, font: `500 14.5px/1 ${sansFont}` }}
-                            >
-                              Choose files
-                            </button>
-                            <button
-                              onClick={addFolder}
-                              className="ftc-btn-secondary"
-                              style={{ padding: "14px 20px", borderRadius: 99, font: `400 14.5px/1 ${sansFont}` }}
-                            >
-                              Add a folder
-                            </button>
-                          </div>
+                      <div style={{ pointerEvents: "auto", alignSelf: "flex-start", maxWidth: 340 }}>
+                        <div style={{ font: `300 30px/1.14 ${sansFont}`, letterSpacing: "-.03em", color: botInk }}>
+                          {isDragging ? "Lâchez pour déposer." : "Drop your files here."}
                         </div>
-                      )}
-
-                      {isSending && (
-                        <div style={{ pointerEvents: "auto", display: "flex", alignItems: "flex-end", gap: 18, flexWrap: "wrap" }}>
-                          <div style={{ flex: 1, minWidth: 190 }}>
-                            <div style={{ height: 6, borderRadius: 99, background: "rgba(22,24,28,.1)", overflow: "hidden" }}>
-                              <div style={{ height: "100%", width: pctWidth, background: "#5b4bff", borderRadius: 99 }} />
-                            </div>
-                            <div
-                              style={{
-                                marginTop: 12,
-                                display: "flex",
-                                justifyContent: "space-between",
-                                gap: 12,
-                                font: `400 14px/1 ${sansFont}`,
-                                color: botMuted,
-                              }}
-                            >
-                              <span>{sentLabel}</span>
-                              <span>{etaLabel}</span>
-                            </div>
-                          </div>
+                        <div style={{ display: "flex", gap: 10, marginTop: 22, flexWrap: "wrap" }}>
                           <button
-                            onClick={() => goToScreen("sent")}
-                            className="ftc-btn-secondary"
-                            style={{ padding: "12px 18px", borderRadius: 99, font: `400 14px/1 ${sansFont}` }}
+                            onClick={() => fileInputRef.current?.click()}
+                            className="ftc-btn-primary"
+                            style={{ padding: "14px 22px", borderRadius: 99, font: `500 14.5px/1 ${sansFont}` }}
                           >
-                            Skip ahead
+                            Choose files
+                          </button>
+                          <button
+                            onClick={() => folderInputRef.current?.click()}
+                            className="ftc-btn-secondary"
+                            style={{ padding: "14px 20px", borderRadius: 99, font: `400 14.5px/1 ${sansFont}` }}
+                          >
+                            Add a folder
                           </button>
                         </div>
-                      )}
-
-                      {isSent && (
-                        <div style={{ pointerEvents: "auto", maxWidth: 340 }}>
-                          <div style={{ font: `300 30px/1.14 ${sansFont}`, letterSpacing: "-.03em", color: botInk }}>
-                            Your link is ready to share.
-                          </div>
-                        </div>
-                      )}
-
-                      {isReceive && (
-                        <div style={{ pointerEvents: "auto", maxWidth: 350 }}>
-                          <div style={{ font: `400 14px/1 ${sansFont}`, color: botMuted }}>From Amélie</div>
-                          <div style={{ marginTop: 14, font: `300 30px/1.14 ${sansFont}`, letterSpacing: "-.03em", color: botInk }}>
-                            {receiveHead}
-                          </div>
-                          <div style={{ display: "flex", gap: 10, marginTop: 22, flexWrap: "wrap" }}>
-                            <button
-                              onClick={startDrain}
-                              className="ftc-btn-primary"
-                              style={{ padding: "14px 22px", borderRadius: 99, font: `500 14.5px/1 ${sansFont}` }}
-                            >
-                              {drainLabel}
-                            </button>
-                            <button
-                              onClick={resetReceive}
-                              className="ftc-btn-secondary"
-                              style={{ padding: "14px 20px", borderRadius: 99, font: `400 14.5px/1 ${sansFont}` }}
-                            >
-                              Replay
-                            </button>
-                          </div>
-                        </div>
-                      )}
+                      </div>
                     </div>
                   </div>
 
                   <div style={{ flex: "1 1 340px", minWidth: 290, display: "flex", flexDirection: "column", minHeight: 0, background: "#ffffff", padding: "0 26px 26px" }}>
-                    <div style={{ padding: "6px 6px 14px", font: `400 14px/1 ${sansFont}`, color: "#6b7178" }}>{listMeta}</div>
+                    <div style={{ padding: "6px 6px 14px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                      <div style={{ flex: 1, font: `400 14px/1 ${sansFont}`, color: "#6b7178" }}>
+                        {uploads.length === 0 ? "Aucun envoi pour l'instant" : `${uploads.length} envoi${uploads.length > 1 ? "s" : ""} cette session`}
+                      </div>
+                      {uploads.length > 0 && (
+                        <button
+                          onClick={createShareLink}
+                          disabled={pendingShareCount === 0 || shareBusy}
+                          className="ftc-btn-primary"
+                          style={{
+                            padding: "9px 16px",
+                            borderRadius: 99,
+                            font: `500 13px/1 ${sansFont}`,
+                            flex: "none",
+                            opacity: pendingShareCount === 0 || shareBusy ? 0.5 : 1,
+                          }}
+                        >
+                          {shareBusy
+                            ? "Création…"
+                            : pendingShareCount > 0
+                              ? `Créer un lien de partage${pendingShareCount > 1 ? ` (${pendingShareCount})` : ""}`
+                              : sessionShares.length > 0
+                                ? "Lien de partage créé"
+                                : "Créer un lien de partage"}
+                        </button>
+                      )}
+                    </div>
+
+                    {shareError && (
+                      <div style={{ padding: "0 6px 12px", font: `400 13px/1.4 ${sansFont}`, color: "#d2493c" }}>
+                        {shareError}
+                      </div>
+                    )}
+
+                    {sessionShares.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "0 6px 16px" }}>
+                        {sessionShares.map((share) => (
+                          <div
+                            key={share.id}
+                            style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, borderRadius: 14, background: "#f6f4f0" }}
+                          >
+                            <ShareQrCode url={share.url} size={44} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div
+                                style={{
+                                  font: `400 13px/1.5 var(--font-ibm-plex-mono), monospace`,
+                                  color: "#16181c",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {share.url}
+                              </div>
+                              <div
+                                style={{
+                                  marginTop: 4,
+                                  font: `400 12.5px/1.4 ${sansFont}`,
+                                  color: "#6b7178",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {share.fileNames.length} fichier{share.fileNames.length > 1 ? "s" : ""} · {share.fileNames.join(", ")}
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => copyShareLink(share.id, share.url)}
+                              className="ftc-btn-secondary"
+                              style={{ padding: "8px 14px", borderRadius: 99, font: `400 13px/1 ${sansFont}`, flex: "none" }}
+                            >
+                              {copiedShareId === share.id ? "Copié" : "Copier le lien"}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: 2, minHeight: 130 }}>
-                      {rows.map((f) => (
-                        <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 6px" }}>
+                      {uploads.map((u) => {
+                        const tile = TILES[extFromName(u.name)] || FALLBACK_TILE;
+                        const status =
+                          u.status === "done"
+                            ? "Envoyé"
+                            : u.status === "error"
+                              ? (u.error ?? "Erreur")
+                              : `${Math.round(u.progress * 100)}%`;
+                        const statusColor = u.status === "done" ? "#0b6b45" : u.status === "error" ? "#d2493c" : "#5b4bff";
+                        return (
+                          <div key={u.id} style={{ padding: "12px 6px", borderBottom: "1px solid rgba(22,24,28,.06)" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                              <div
+                                style={{
+                                  width: 36,
+                                  height: 36,
+                                  flex: "none",
+                                  borderRadius: 11,
+                                  background: tile[0],
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  font: `500 10.5px/1 ${sansFont}`,
+                                  color: tile[1],
+                                }}
+                              >
+                                {extFromName(u.name)}
+                              </div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ font: `400 15px/1.25 ${sansFont}`, color: "#16181c", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {u.name}
+                                </div>
+                                <div style={{ marginTop: 4, font: `400 13px/1.3 ${sansFont}`, color: "#6b7178" }}>
+                                  {fmtBytes(u.sizeBytes)}
+                                </div>
+                              </div>
+                              <div style={{ font: `400 13px/1 ${sansFont}`, color: statusColor, textAlign: "right", flex: "none", maxWidth: 140 }}>
+                                {status}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {isFiles && (
+                <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "0 32px 32px" }}>
+                  {filesError && (
+                    <div style={{ marginBottom: 16, font: `400 14px/1.4 ${sansFont}`, color: "#d2493c" }}>{filesError}</div>
+                  )}
+                  {filesLoading && files.length === 0 && (
+                    <div style={{ font: `400 14px/1.4 ${sansFont}`, color: "#6b7178" }}>Chargement…</div>
+                  )}
+                  {!filesLoading && files.length === 0 && !filesError && (
+                    <div style={{ font: `400 14px/1.4 ${sansFont}`, color: "#6b7178" }}>
+                      Aucun fichier déposé pour l&apos;instant.
+                    </div>
+                  )}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 720 }}>
+                    {files.map((f) => {
+                      const tile = TILES[extFromName(f.originalName)] || FALLBACK_TILE;
+                      return (
+                        <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 6px" }}>
                           <div
                             style={{
                               width: 36,
                               height: 36,
                               flex: "none",
                               borderRadius: 11,
-                              background: f.tileBg,
+                              background: tile[0],
                               display: "flex",
                               alignItems: "center",
                               justifyContent: "center",
                               font: `500 10.5px/1 ${sansFont}`,
-                              color: f.tileFg,
+                              color: tile[1],
                             }}
                           >
-                            {f.ext}
+                            {extFromName(f.originalName)}
                           </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ font: `400 15px/1.25 ${sansFont}`, color: "#16181c", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {f.name}
+                              {f.originalName}
                             </div>
-                            <div style={{ marginTop: 4, font: `400 13px/1.3 ${sansFont}`, color: "#6b7178" }}>{f.sub}</div>
-                          </div>
-                          <div style={{ font: `400 13px/1 ${sansFont}`, color: f.statusColor, textAlign: "right", flex: "none" }}>
-                            {f.status}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {isDrop && (
-                      <div style={{ paddingTop: 20, display: "flex", flexDirection: "column", gap: 16 }}>
-                        <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                          <span style={{ font: `400 13px/1 ${sansFont}`, color: "#6b7178" }}>Send to</span>
-                          <input
-                            type="text"
-                            defaultValue="marc@atelier-nord.be"
-                            className="ftc-input"
-                            style={{ padding: "14px 15px", borderRadius: 12, color: "#16181c", font: `400 15px/1 ${sansFont}` }}
-                          />
-                        </label>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          {opts.map((o) => (
-                            <button
-                              key={o.label}
-                              onClick={o.onClick}
-                              style={{
-                                padding: "9px 15px",
-                                borderRadius: 99,
-                                border: "none",
-                                background: o.bg,
-                                color: o.fg,
-                                font: `400 13.5px/1 ${sansFont}`,
-                                cursor: "pointer",
-                              }}
-                            >
-                              {o.label}
-                            </button>
-                          ))}
-                        </div>
-                        <button
-                          onClick={startSend}
-                          className="ftc-btn-primary"
-                          style={{ padding: 17, borderRadius: 99, font: `500 15px/1 ${sansFont}` }}
-                        >
-                          Upload and get a link
-                        </button>
-                      </div>
-                    )}
-
-                    {isSending && (
-                      <div style={{ paddingTop: 20, font: `400 14px/1.6 ${sansFont}`, color: "#6b7178" }}>{sendingNote}</div>
-                    )}
-
-                    {isSent && (
-                      <div style={{ paddingTop: 20, display: "flex", flexDirection: "column", gap: 16 }}>
-                        <div style={{ padding: 18, borderRadius: 16, background: "#f6f4f0" }}>
-                          <div style={{ display: "flex", gap: 18, alignItems: "flex-start", flexWrap: "wrap" }}>
-                            <div style={{ flex: 1, minWidth: 150 }}>
-                              <div style={{ font: `400 13px/1 ${sansFont}`, color: "#6b7178" }}>Your link</div>
-                              <div style={{ marginTop: 10, font: `400 14.5px/1.5 ${monoFont}`, color: "#16181c", wordBreak: "break-all" }}>
-                                filemoca.app/d/7QX-4KP-9ZB
-                              </div>
-                              <div style={{ marginTop: 10, font: `400 13px/1.5 ${sansFont}`, color: "#6b7178" }}>
-                                Scan the code to download on a phone.
-                              </div>
+                            <div style={{ marginTop: 4, font: `400 13px/1.3 ${sansFont}`, color: "#6b7178" }}>
+                              {fmtBytes(f.sizeBytes)} · {new Date(f.createdAt).toLocaleDateString("fr-FR")}
                             </div>
-                            <canvas
-                              ref={handleQrRef}
-                              style={{ width: 132, height: 132, flex: "none", borderRadius: 12, background: "#fff", boxShadow: "0 2px 12px -8px rgba(22,24,28,.5)" }}
-                            />
                           </div>
-                          <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
-                            <button
-                              onClick={copyLink}
-                              className="ftc-btn-primary"
-                              style={{ flex: 1, minWidth: 120, padding: 13, borderRadius: 99, font: `500 14px/1 ${sansFont}` }}
-                            >
-                              {copied ? "Copied" : "Copy link"}
-                            </button>
-                            <button
-                              onClick={() => goToScreen("receive")}
-                              className="ftc-btn-secondary-alt"
-                              style={{ padding: "13px 18px", borderRadius: 99, font: `400 14px/1 ${sansFont}` }}
-                            >
-                              See it as they do
-                            </button>
-                          </div>
+                          <button
+                            onClick={() => handleDelete(f.id)}
+                            disabled={deletingId === f.id}
+                            className="ftc-btn-text"
+                            style={{ padding: "8px 14px", borderRadius: 99, font: `400 13px/1 ${sansFont}`, flex: "none" }}
+                          >
+                            {deletingId === f.id ? "…" : "Supprimer"}
+                          </button>
                         </div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                          {sentMeta.map((m) => (
-                            <div key={m.k} style={{ display: "flex", justifyContent: "space-between", gap: 12, font: `400 14px/1 ${sansFont}` }}>
-                              <span style={{ color: "#6b7178" }}>{m.k}</span>
-                              <span style={{ color: "#3b4046" }}>{m.v}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <button
-                          onClick={resetAll}
-                          className="ftc-btn-text"
-                          style={{ padding: 15, borderRadius: 99, font: `400 14px/1 ${sansFont}` }}
-                        >
-                          Start a new transfer
-                        </button>
-                      </div>
-                    )}
-
-                    {isReceive && (
-                      <div style={{ paddingTop: 20, display: "flex", flexDirection: "column", gap: 14 }}>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                          {recvMeta.map((m) => (
-                            <div key={m.k} style={{ display: "flex", justifyContent: "space-between", gap: 12, font: `400 14px/1 ${sansFont}` }}>
-                              <span style={{ color: "#6b7178" }}>{m.k}</span>
-                              <span style={{ color: "#3b4046" }}>{m.v}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <div style={{ font: `400 13.5px/1.6 ${sansFont}`, color: "#6b7178" }}>
-                          Files stay available for 6 more days, then they are deleted automatically.
-                        </div>
-                      </div>
-                    )}
+                      );
+                    })}
                   </div>
                 </div>
-              </div>
+              )}
+
+              {isAccount && (
+                <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "0 32px 32px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 420 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, font: `400 14px/1 ${sansFont}` }}>
+                      <span style={{ color: "#6b7178" }}>Email</span>
+                      <span style={{ color: "#3b4046" }}>{user?.email}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, font: `400 14px/1 ${sansFont}` }}>
+                      <span style={{ color: "#6b7178" }}>Offre</span>
+                      <span style={{ color: "#3b4046" }}>{quota?.plan ?? "—"}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, font: `400 14px/1 ${sansFont}` }}>
+                      <span style={{ color: "#6b7178" }}>Utilisé ce mois-ci</span>
+                      <span style={{ color: "#3b4046" }}>{quota ? fmtBytes(quota.usedBytes) : "—"}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, font: `400 14px/1 ${sansFont}` }}>
+                      <span style={{ color: "#6b7178" }}>Restant</span>
+                      <span style={{ color: "#3b4046" }}>{quota ? fmtBytes(quota.remainingBytes) : "—"}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, font: `400 14px/1 ${sansFont}` }}>
+                      <span style={{ color: "#6b7178" }}>Période</span>
+                      <span style={{ color: "#3b4046" }}>{quota?.period ?? "—"}</span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="ftc-btn-secondary"
+                    style={{ marginTop: 26, padding: "13px 22px", borderRadius: 99, font: `500 14px/1 ${sansFont}` }}
+                  >
+                    Se déconnecter
+                  </button>
+                </div>
+              )}
             </div>
-          )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -23,8 +23,31 @@ export interface GrantedDownload {
   contentAuthTag: string;
 }
 
+/** Un fichier tel qu'exposé par un partage. */
+export interface SharedFile {
+  id: string;
+  fileName: string;
+  sizeBytes: number;
+}
+
+const FILE_SELECT = {
+  id: true,
+  storageName: true,
+  originalNameEnc: true,
+  sizeBytes: true,
+  dekWrapped: true,
+  contentIv: true,
+  contentAuthTag: true,
+} as const;
+
 /**
  * Création, révocation et contrôle des liens de partage.
+ *
+ * ## Un lien, une session de dépôt
+ *
+ * Un partage couvre un ou plusieurs fichiers derrière un seul jeton : le
+ * destinataire n'a qu'une seule adresse à ouvrir pour récupérer tout ce qui
+ * lui a été envoyé, plutôt qu'un lien par fichier.
  *
  * ## Le lien se suffit à lui-même
  *
@@ -55,7 +78,7 @@ export class SharesService {
   ) {}
 
   /**
-   * Crée un lien de partage sur un fichier que l'on possède.
+   * Crée un lien de partage sur un ou plusieurs fichiers que l'on possède.
    *
    * @returns Le partage **et** le jeton en clair, seule occasion de le lire.
    */
@@ -63,9 +86,11 @@ export class SharesService {
     ownerId: string,
     input: CreateShareDto,
   ): Promise<{ id: string; token: string; expiresAt: Date; createdAt: Date }> {
-    // Lève 404 si le fichier n'existe pas ou appartient à quelqu'un d'autre :
-    // on ne partage que ce qu'on possède.
-    await this.files.requireOwned(ownerId, input.fileId);
+    // Lève 404 si l'un des fichiers n'existe pas ou appartient à quelqu'un
+    // d'autre : on ne partage que ce qu'on possède, et entièrement.
+    await Promise.all(
+      input.fileIds.map((fileId) => this.files.requireOwned(ownerId, fileId)),
+    );
 
     const token = this.crypto.generateToken();
     const expiresAt = new Date(
@@ -74,7 +99,6 @@ export class SharesService {
 
     const share = await this.prisma.share.create({
       data: {
-        fileId: input.fileId,
         tokenHash: this.crypto.hashToken(token),
         // Facultatif, et purement informatif : c'est le jeton qui donne accès.
         recipientEmailEnc: input.recipientEmail
@@ -89,11 +113,16 @@ export class SharesService {
           ? await this.passwords.hash(input.password)
           : null,
         expiresAt,
+        files: {
+          create: input.fileIds.map((fileId) => ({ fileId })),
+        },
       },
       select: { id: true, expiresAt: true, createdAt: true },
     });
 
-    this.logger.log(`Partage créé : ${share.id} (expire le ${expiresAt.toISOString()})`);
+    this.logger.log(
+      `Partage créé : ${share.id} (${input.fileIds.length} fichier(s), expire le ${expiresAt.toISOString()})`,
+    );
 
     return { ...share, token };
   }
@@ -102,8 +131,7 @@ export class SharesService {
   async listOwnedBy(ownerId: string): Promise<
     {
       id: string;
-      fileId: string;
-      fileName: string;
+      files: SharedFile[];
       recipientEmail?: string;
       protectedByPassword: boolean;
       status: ShareStatus;
@@ -112,24 +140,26 @@ export class SharesService {
     }[]
   > {
     const shares = await this.prisma.share.findMany({
-      where: { file: { ownerId } },
+      where: { files: { some: { file: { ownerId } } } },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
-        fileId: true,
         recipientEmailEnc: true,
         passwordHash: true,
         revoked: true,
         expiresAt: true,
         createdAt: true,
-        file: { select: { originalNameEnc: true } },
+        files: {
+          select: {
+            file: { select: { id: true, originalNameEnc: true, sizeBytes: true } },
+          },
+        },
       },
     });
 
     return shares.map((share) => ({
       id: share.id,
-      fileId: share.fileId,
-      fileName: this.crypto.openToString(share.file.originalNameEnc),
+      files: share.files.map(({ file }) => this.toSharedFile(file)),
       ...(share.recipientEmailEnc
         ? { recipientEmail: this.crypto.openToString(share.recipientEmailEnc) }
         : {}),
@@ -148,12 +178,12 @@ export class SharesService {
    * Idempotent : révoquer deux fois n'est pas une erreur. Un utilisateur qui
    * clique deux fois sur « révoquer » veut avant tout que le lien soit mort.
    *
-   * @throws {NotFoundException} Si le partage n'existe pas ou porte sur le
-   * fichier de quelqu'un d'autre.
+   * @throws {NotFoundException} Si le partage n'existe pas ou porte sur des
+   * fichiers de quelqu'un d'autre.
    */
   async revoke(ownerId: string, shareId: string): Promise<void> {
     const share = await this.prisma.share.findFirst({
-      where: { id: shareId, file: { ownerId } },
+      where: { id: shareId, files: { some: { file: { ownerId } } } },
       select: { id: true, revoked: true },
     });
 
@@ -179,34 +209,48 @@ export class SharesService {
   /**
    * Décrit un lien sans le consommer, pour que le front sache quoi afficher.
    *
-   * Volontairement avare quand le lien est protégé : le nom et la taille du
-   * fichier ne sont révélés qu'une fois le mot de passe franchi. Quelqu'un qui
-   * intercepterait le lien apprendrait sinon ce qu'il contient sans jamais
-   * avoir à le déverrouiller.
+   * Volontairement avare quand le lien est protégé et qu'aucun mot de passe
+   * n'est fourni : la liste des fichiers n'est révélée qu'une fois le mot de
+   * passe franchi. Quelqu'un qui intercepterait le lien apprendrait sinon ce
+   * qu'il contient sans jamais avoir à le déverrouiller.
+   *
+   * Recevoir un mot de passe ici permet au front de le vérifier **une seule
+   * fois** pour tout le partage, plutôt que de le redemander à chaque fichier
+   * téléchargé individuellement.
+   *
+   * @throws {ForbiddenException} `SHARE_PASSWORD_INVALID` si un mot de passe
+   * est fourni mais incorrect — pour que le front le signale immédiatement,
+   * avant toute tentative de téléchargement.
    */
-  async describe(token: string): Promise<{
+  async describe(
+    token: string,
+    password?: string,
+  ): Promise<{
     requiresPassword: boolean;
     expiresAt: Date;
-    fileName?: string;
-    sizeBytes?: number;
+    files?: SharedFile[];
   }> {
     const share = await this.findUsable(token);
     const requiresPassword = share.passwordHash !== null;
 
+    if (requiresPassword && password) {
+      await this.verifyPassword(share.passwordHash!, password);
+    }
+
+    const unlocked = !requiresPassword || Boolean(password);
+
     return {
       requiresPassword,
       expiresAt: share.expiresAt,
-      ...(requiresPassword
-        ? {}
-        : {
-            fileName: this.crypto.openToString(share.file.originalNameEnc),
-            sizeBytes: share.file.sizeBytes,
-          }),
+      ...(unlocked
+        ? { files: share.files.map((file) => this.toSharedFile(file)) }
+        : {}),
     };
   }
 
   /**
-   * Vérifie qu'un jeton donne bien droit au téléchargement.
+   * Vérifie qu'un jeton donne bien droit au téléchargement d'un fichier
+   * précis parmi ceux du partage.
    *
    * Quatre contrôles, dans cet ordre :
    *
@@ -215,6 +259,9 @@ export class SharesService {
    * 3. il n'a pas expiré — sinon **410** ;
    * 4. le mot de passe, s'il y en a un, est le bon — sinon **401** ou **403**.
    *
+   * Le fichier demandé doit en outre faire partie du partage — sinon **404** :
+   * un jeton valide ne donne accès qu'aux fichiers qu'il couvre.
+   *
    * La révocation est vérifiée avant l'expiration : c'est le geste délibéré du
    * propriétaire, et il doit primer sur une date atteinte entre-temps.
    *
@@ -222,6 +269,7 @@ export class SharesService {
    */
   async authorizeDownload(
     token: string,
+    fileId: string,
     password?: string,
   ): Promise<GrantedDownload> {
     const share = await this.findUsable(token);
@@ -234,27 +282,60 @@ export class SharesService {
         });
       }
 
-      const valid = await this.passwords.verify(share.passwordHash, password);
+      await this.verifyPassword(share.passwordHash, password);
+    }
 
-      if (!valid) {
-        this.logger.warn(
-          'Mot de passe incorrect sur un lien de partage protégé',
-        );
+    const file = share.files.find((candidate) => candidate.id === fileId);
 
-        throw new ForbiddenException({
-          error: 'SHARE_PASSWORD_INVALID',
-          message: 'Mot de passe incorrect.',
-        });
-      }
+    if (!file) {
+      throw new NotFoundException({
+        error: 'FILE_NOT_IN_SHARE',
+        message: 'Ce fichier ne fait pas partie de ce partage.',
+      });
     }
 
     return {
-      storageName: share.file.storageName,
-      originalName: this.crypto.openToString(share.file.originalNameEnc),
-      sizeBytes: share.file.sizeBytes,
-      dekWrapped: share.file.dekWrapped,
-      contentIv: share.file.contentIv,
-      contentAuthTag: share.file.contentAuthTag,
+      storageName: file.storageName,
+      originalName: this.crypto.openToString(file.originalNameEnc),
+      sizeBytes: file.sizeBytes,
+      dekWrapped: file.dekWrapped,
+      contentIv: file.contentIv,
+      contentAuthTag: file.contentAuthTag,
+    };
+  }
+
+  /**
+   * Vérifie le mot de passe d'un lien protégé, ou échoue avec le même refus
+   * partout où ce contrôle est fait — à la consultation comme au téléchargement.
+   *
+   * @throws {ForbiddenException} `SHARE_PASSWORD_INVALID` si le mot de passe est incorrect.
+   */
+  private async verifyPassword(
+    passwordHash: string,
+    password: string,
+  ): Promise<void> {
+    const valid = await this.passwords.verify(passwordHash, password);
+
+    if (!valid) {
+      this.logger.warn('Mot de passe incorrect sur un lien de partage protégé');
+
+      throw new ForbiddenException({
+        error: 'SHARE_PASSWORD_INVALID',
+        message: 'Mot de passe incorrect.',
+      });
+    }
+  }
+
+  /** Déchiffre le nom d'un fichier pour l'exposer au propriétaire ou au destinataire. */
+  private toSharedFile(file: {
+    id: string;
+    originalNameEnc: string;
+    sizeBytes: number;
+  }): SharedFile {
+    return {
+      id: file.id,
+      fileName: this.crypto.openToString(file.originalNameEnc),
+      sizeBytes: file.sizeBytes,
     };
   }
 
@@ -268,14 +349,15 @@ export class SharesService {
   private async findUsable(token: string): Promise<{
     passwordHash: string | null;
     expiresAt: Date;
-    file: {
+    files: {
+      id: string;
       storageName: string;
       originalNameEnc: string;
       sizeBytes: number;
       dekWrapped: string;
       contentIv: string;
       contentAuthTag: string;
-    };
+    }[];
   }> {
     const share = await this.prisma.share.findUnique({
       where: { tokenHash: this.crypto.hashToken(token) },
@@ -283,16 +365,7 @@ export class SharesService {
         revoked: true,
         expiresAt: true,
         passwordHash: true,
-        file: {
-          select: {
-            storageName: true,
-            originalNameEnc: true,
-            sizeBytes: true,
-            dekWrapped: true,
-            contentIv: true,
-            contentAuthTag: true,
-          },
-        },
+        files: { select: { file: { select: FILE_SELECT } } },
       },
     });
 
@@ -319,7 +392,11 @@ export class SharesService {
       });
     }
 
-    return share;
+    return {
+      passwordHash: share.passwordHash,
+      expiresAt: share.expiresAt,
+      files: share.files.map(({ file }) => file),
+    };
   }
 
   /** Détermine l'état affiché d'un partage. */

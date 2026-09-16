@@ -134,13 +134,15 @@ model File {
   ownerId String @map("owner_id") @db.Uuid
   owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
-  shares Share[]
+  shares ShareFile[]
 
   @@index([ownerId])
   @@map("files")
 }
 
-/// Un lien de partage vers un fichier, à destination d'un email précis.
+/// Un lien de partage vers un ou plusieurs fichiers, à destination d'un email
+/// précis. Un même lien couvre toute une session de dépôt : le destinataire
+/// n'a qu'une seule adresse à ouvrir pour récupérer l'ensemble.
 model Share {
   id String @id @default(uuid()) @db.Uuid
 
@@ -174,12 +176,27 @@ model Share {
 
   createdAt DateTime @default(now()) @map("created_at")
 
-  fileId String @map("file_id") @db.Uuid
-  file   File   @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  files ShareFile[]
 
-  @@index([fileId])
   @@index([recipientEmailHmac])
   @@map("shares")
+}
+
+/// Association entre un partage et un fichier qu'il couvre.
+///
+/// Table de jointure plutôt qu'un `fileId` unique sur `Share` : un partage
+/// représente une session de dépôt entière, potentiellement plusieurs
+/// fichiers, derrière un seul jeton.
+model ShareFile {
+  shareId String @map("share_id") @db.Uuid
+  fileId  String @map("file_id") @db.Uuid
+
+  share Share @relation(fields: [shareId], references: [id], onDelete: Cascade)
+  file  File  @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@id([shareId, fileId])
+  @@index([fileId])
+  @@map("share_files")
 }
 
 /// Refresh token, stocké haché.
