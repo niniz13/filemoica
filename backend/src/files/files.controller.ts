@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Post,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -27,8 +28,11 @@ import { CurrentUser } from '../auth/decorators';
 import type { AccessTokenPayload } from '../auth/token.service';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
 import { FileResponse } from './dto/file.response';
+import { QuotaResponse } from './dto/quota.response';
 import type { EncryptedUpload } from './encrypted-upload.storage';
 import { FilesService } from './files.service';
+import { QuotaGuard } from './quota.guard';
+import { QuotaService } from './quota.service';
 
 /**
  * Dépôt et gestion des fichiers.
@@ -45,7 +49,10 @@ import { FilesService } from './files.service';
 })
 @Controller('files')
 export class FilesController {
-  constructor(private readonly files: FilesService) {}
+  constructor(
+    private readonly files: FilesService,
+    private readonly quotas: QuotaService,
+  ) {}
 
   /**
    * Dépose un fichier.
@@ -75,6 +82,18 @@ export class FilesController {
     description: '`FILE_TOO_LARGE` — taille maximale dépassée.',
     type: ApiErrorResponse,
   })
+  @ApiResponse({
+    status: 415,
+    description: '`FILE_TYPE_NOT_ALLOWED` — format refusé, d\'après ses octets de signature.',
+    type: ApiErrorResponse,
+  })
+  @ApiResponse({
+    status: 402,
+    description:
+      '`QUOTA_EXCEEDED` — volume mensuel de l\'offre atteint. Le compteur repart le 1er du mois.',
+    type: ApiErrorResponse,
+  })
+  @UseGuards(QuotaGuard)
   @Post()
   @UseInterceptors(FileInterceptor('file'))
   async upload(
@@ -89,6 +108,25 @@ export class FilesController {
     }
 
     return this.files.register(user.sub, file);
+  }
+
+  /**
+   * État du quota mensuel.
+   *
+   * Déclarée avant `:id` : sans cela, « quota » serait pris pour un
+   * identifiant de fichier par la route de suppression.
+   */
+  @ApiOperation({
+    summary: 'Consulter son quota',
+    description:
+      'Volume déposé ce mois-ci et solde restant. Le quota mesure ce qui a été **déposé**, pas l\'espace occupé : supprimer un fichier ne rend pas de quota.',
+  })
+  @ApiOkResponse({ type: QuotaResponse })
+  @Get('quota')
+  async quota(
+    @CurrentUser() user: AccessTokenPayload,
+  ): Promise<QuotaResponse> {
+    return this.quotas.statusFor(user.sub);
   }
 
   /** Liste les fichiers déposés par l'utilisateur connecté. */
