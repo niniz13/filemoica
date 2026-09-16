@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Headers,
+  InternalServerErrorException,
   Logger,
   Param,
   ParseUUIDPipe,
@@ -138,6 +139,12 @@ export class DownloadController {
     description: '`SHARE_EXPIRED` — le lien a existé, sa durée est écoulée.',
     type: ApiErrorResponse,
   })
+  @ApiResponse({
+    status: 500,
+    description:
+      '`CONTENT_UNAVAILABLE` — le lien est valide mais le contenu est absent du support (restauration incomplète, volume non monté). Le destinataire n\'a rien à corriger de son côté.',
+    type: ApiErrorResponse,
+  })
   // Le jeton fait 32 octets aléatoires : le deviner est hors de portée, et ce
   // n'est pas lui qu'on protège ici. C'est le **mot de passe du lien**, choisi
   // par un humain, qu'on empêche d'éprouver par essais successifs.
@@ -155,6 +162,31 @@ export class DownloadController {
     // Lève 404, 403, 410 ou 401 selon le contrôle qui échoue. Rien n'est ouvert
     // tant qu'ils ne sont pas tous passés.
     const granted = await this.shares.authorizeDownload(token, fileId, password);
+
+    // Le contenu est-il réellement sur le support ? La question n'est pas
+    // théorique : une restauration incomplète — ou un volume non monté — laisse
+    // les liens parfaitement valides en base alors que les octets ont disparu.
+    //
+    // Sans ce contrôle, l'échec ne survient qu'une fois l'envoi commencé : les
+    // en-têtes sont partis, le statut ne peut plus changer, et le destinataire
+    // reçoit une connexion coupée sans la moindre explication. Une lecture de
+    // métadonnée coûte ici infiniment moins que la lecture du fichier entier
+    // qui suit.
+    //
+    // Placé **avant** la réservation du fichier : il n'y a ainsi rien à défaire.
+    if (!(await this.storage.exists(granted.storageName))) {
+      this.logger.error(
+        `Contenu introuvable sur le support : ${granted.storageName} — restauration incomplète ou volume non monté ?`,
+      );
+
+      // 500 et non 404 : le lien est valide et le fichier devrait exister. Le
+      // destinataire n'a rien fait de travers, c'est le service qui a perdu la
+      // donnée — un 404 l'enverrait vérifier son lien pour rien.
+      throw new InternalServerErrorException({
+        error: 'CONTENT_UNAVAILABLE',
+        message: 'Le contenu de ce fichier est momentanément indisponible.',
+      });
+    }
 
     // Sur un lien à usage unique, le fichier est réservé **avant** l'envoi :
     // deux téléchargements simultanés du même fichier ne doivent pas réussir
@@ -191,8 +223,19 @@ export class DownloadController {
       // en-têtes : impossible de changer le statut à ce stade. On coupe la
       // connexion, ce qui donne au destinataire un téléchargement manifestement
       // interrompu plutôt qu'un fichier corrompu qu'il croirait valide.
+      //
+      // Deux causes très différentes aboutissent ici, et les confondre égare le
+      // diagnostic : un contenu disparu **pendant** l'envoi (le contrôle
+      // ci-dessus a réussi juste avant — course rare mais possible) n'a rien à
+      // voir avec un tag d'intégrité qui ne correspond pas.
+      const disparu =
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT';
+
       this.logger.error(
-        `Échec du déchiffrement de ${granted.storageName} — fichier altéré ou clé invalide`,
+        disparu
+          ? `Contenu disparu pendant l'envoi : ${granted.storageName}`
+          : `Échec du déchiffrement de ${granted.storageName} — fichier altéré ou clé invalide`,
         error instanceof Error ? error.stack : String(error),
       );
 

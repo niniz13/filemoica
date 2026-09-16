@@ -1,4 +1,4 @@
-# Résultats des tests — Backend
+﻿# Résultats des tests — Backend
 
 **Version de référence :** `7540cd8` · **Date du relevé :** 16/09/2026
 
@@ -156,6 +156,75 @@ Exécution réelle sur la base de développement :
 
 *Mesuré.*
 
+### 5.5 Sauvegarde et restauration — 16/09, 15 h 30
+
+**Le critère « incident maîtrisé » du sujet.** Joué contre la pile conteneurisée
+complète, donc dans les conditions de la production.
+
+| Étape | Action | Attendu | Obtenu |
+|---|---|---|---|
+| 1 | Dépôt + lien, téléchargement témoin | Fonctionnel | ✅ 337 o, SHA-256 `a74f4a44…` |
+| 2 | `pg_dump` puis archive du volume | Deux artefacts | ✅ 14 453 o en 0,6 s · 510 o en 0,9 s |
+| 3 | `docker compose down -v` | Destruction réelle | ✅ 2,0 s, plus aucun volume |
+| 4 | Restauration fichiers **puis** base | Aucune erreur | ✅ 1,1 s · **0 erreur** |
+| 5 | Migrations au redémarrage | Rien à appliquer | ✅ « No pending migrations to apply » |
+| 6 | **Re-téléchargement du même lien** | **Contenu identique** | ✅ SHA-256 **identique au bit près** |
+
+**Restauration complète en ~30 secondes.** *(Mesuré.)*
+
+L'étape 6 est la preuve : le nom `contrat.txt` revient déchiffré et le lien
+d'origine fonctionne, donc la clé maître, la DEK chiffrée, le contenu et le tag
+d'intégrité sont tous cohérents entre eux.
+
+#### Le défaut trouvé en jouant la procédure — et c'est tout l'intérêt
+
+**La procédure documentée échouait.** Au premier passage : **42 erreurs**, et un
+résultat pire qu'un échec franc —
+
+```
+users=1  files=0  shares=0
+```
+
+Une base qui *paraît* restaurée. Deux causes, toutes deux corrigées :
+
+1. Le conteneur de migrations recréait le schéma **avant** la restauration, donc
+   chaque `CREATE TABLE` du dump échouait, puis les données tombaient en cascade
+   sur les clés étrangères. → La base démarre désormais **seule**, vierge.
+2. `psql` **continue après chaque erreur** par défaut. → `-v ON_ERROR_STOP=1`,
+   pour qu'une restauration ratée échoue franchement au lieu de se taire.
+
+Une procédure jamais exécutée n'est pas une procédure : celle-ci l'a prouvé sur
+elle-même.
+
+#### La règle des deux artefacts, vérifiée
+
+Rejoué en ne restaurant **que la base** :
+
+| Observation | Résultat |
+|---|---|
+| Consultation du lien | **200** — le lien paraît valide |
+| Téléchargement | **Échec** — `ENOENT` dans les journaux |
+| État du service | Reste sain |
+
+*(Observé.)* « Restaurer l'un sans l'autre ne donne rien d'exploitable » est
+désormais une observation, pas une affirmation de principe.
+
+#### Un défaut du service corrigé dans la foulée
+
+Ce scénario a révélé que le téléchargement **coupait la connexion sans rien
+expliquer** quand le contenu manquait : les en-têtes étaient déjà partis
+lorsque la lecture échouait.
+
+| # | Test | Attendu | Obtenu | Nature |
+|---|---|---|---|---|
+| 5.5a | Contenu absent du disque, lien valide | Erreur explicite | ✅ `500 CONTENT_UNAVAILABLE` | Automatisé |
+| 5.5b | Lien à usage unique après cet échec | **Non consumé** | ✅ `consumedAt` reste nul | Automatisé |
+
+`500` et non `404` : le lien est valide et le fichier devrait exister — le
+destinataire n'a rien à corriger de son côté. Le contrôle est placé avant la
+réservation du fichier, de sorte qu'un échec ne consume pas le lien : une fois
+le volume remonté, le destinataire peut réessayer.
+
 ## 6. Journaux et confidentialité
 
 | # | Test | Attendu | Obtenu | Nature | Preuve |
@@ -170,12 +239,12 @@ Exécution réelle sur la base de développement :
 | Commande | Résultat | Date |
 |---|---|---|
 | `npm test` | **128 / 128** | 16/09 |
-| `npm run test:e2e` | **166 / 166** (8 suites) | 16/09 |
+| `npm run test:e2e` | **168 / 168** (8 suites) | 16/09 |
 | `npm run lint` | 0 avertissement | 16/09 |
 | `npx tsc --noEmit` | 0 erreur | 16/09 |
 | `npm run build` | Succès | 16/09 |
 
-**294 tests**, dont 166 de bout en bout contre une vraie base PostgreSQL et un
+**296 tests**, dont 168 de bout en bout contre une vraie base PostgreSQL et un
 vrai répertoire de stockage — pas des doubles.
 
 ---

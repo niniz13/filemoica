@@ -139,8 +139,24 @@ docker compose -p filemoica exec -T app node dist/purge-files.js --dry-run
 
 ## 🔴 Sauvegardes — la partie qui vous revient entièrement
 
-La procédure de restauration est écrite et sera jouée de notre côté pour le
-livrable. **Ce qui reste à votre main, c'est la sauvegarde en production.**
+La procédure de restauration a été **jouée et chronométrée le 16/09** contre la
+pile conteneurisée : restauration complète en **~30 secondes**, fichier récupéré
+**identique au bit près**. **Ce qui reste à votre main, c'est la sauvegarde en
+production.**
+
+> ⚠️ **La procédure a été corrigée à cette occasion — prenez la version à jour.**
+> La première version échouait silencieusement : les migrations recréaient le
+> schéma avant la restauration, `psql` continuait après chaque erreur, et on
+> obtenait une base à moitié restaurée sans qu'aucune commande ne signale
+> d'échec. Deux points à retenir pour vos scripts :
+>
+> - **Démarrer la base seule** (`up -d db`), restaurer, et seulement ensuite
+>   lancer l'application. Le dump contient déjà le schéma.
+> - **Toujours `-v ON_ERROR_STOP=1`** sur `psql`. Sans lui, une restauration
+>   ratée se termine sans rien dire.
+>
+> Commandes complètes dans
+> [le document de décision](decision-stockage-fichiers.md#restauration--lordre-et-létat-de-la-base-comptent).
 
 ### Deux artefacts indissociables
 

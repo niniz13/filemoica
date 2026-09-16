@@ -369,18 +369,57 @@ docker run --rm \
 tar czf sauvegarde-fichiers.tar.gz -C /srv/filemoica/storage .
 ```
 
-Restauration :
+### Restauration — l'ordre **et** l'état de la base comptent
+
+> ⚠️ **Cette procédure a été corrigée après l'avoir jouée le 16/09.** La version
+> précédente remontait toute la pile avant de restaurer, ce qui produisait
+> **42 erreurs et une base à moitié restaurée** — sans que rien n'échoue
+> franchement. Détail du défaut plus bas.
 
 ```bash
-# 1. Fichiers d'abord
+# 1. Démarrer la base SEULE — ni migrations, ni application
+docker compose -f docker-compose.deploy.yml -p filemoica up -d db
+
+# 2. Fichiers d'abord
 docker run --rm \
   -v filemoica_file-storage:/data \
   -v "$PWD":/backup \
   alpine tar xzf /backup/sauvegarde-fichiers.tar.gz -C /data
 
-# 2. Base ensuite
-docker compose exec -T db psql -U filemoica filemoica < sauvegarde-base.sql
+# 3. Base ensuite, avec arrêt à la première erreur
+docker cp sauvegarde-base.sql filemoica-db-1:/tmp/base.sql
+docker compose -f docker-compose.deploy.yml -p filemoica exec -T db \
+  psql -U filemoica -d filemoica -v ON_ERROR_STOP=1 -f /tmp/base.sql
+
+# 4. Démarrer l'application seulement maintenant
+docker compose -f docker-compose.deploy.yml -p filemoica up -d app
 ```
+
+À l'étape 4, le conteneur de migrations se lance, retrouve la table
+`_prisma_migrations` restaurée, annonce « No pending migrations to apply » et
+s'arrête. C'est le comportement attendu : **le dump contient déjà le schéma**,
+il n'y a rien à migrer.
+
+#### Les deux corrections, et pourquoi elles sont indispensables
+
+**1. Ne pas laisser les migrations s'exécuter avant la restauration.** Un
+`pg_dump` contient les `CREATE TYPE` et `CREATE TABLE`. Si le schéma a déjà été
+recréé par le conteneur de migrations, chaque création échoue
+(`type "Plan" already exists`), puis les insertions de données tombent en
+cascade sur des contraintes de clé étrangère. D'où l'étape 1 : la base démarre
+**seule**, vierge.
+
+**2. `-v ON_ERROR_STOP=1` n'est pas un détail.** Par défaut, `psql` **continue
+après chaque erreur**. Sans ce drapeau, la restauration ratée se termine sans
+rien signaler et laisse une base qui *paraît* restaurée :
+
+```
+users=1  files=0  shares=0
+```
+
+Un compte, aucun fichier. C'est exactement ce qu'on a obtenu en jouant la
+procédure d'origine — et c'est le pire des cas, parce qu'on ne s'en aperçoit
+qu'en cherchant un fichier qui n'est plus là.
 
 ### ⚠️ La clé maître ne part jamais avec la sauvegarde
 
@@ -394,21 +433,87 @@ Corollaire, tout aussi important : **une sauvegarde sans la clé est
 irrécupérable**. La clé doit donc être conservée ailleurs, mais sûrement — la
 perdre revient à perdre tous les fichiers.
 
-### Le test de restauration est un livrable
+### Le test de restauration — joué le 16/09
 
-Le sujet demande explicitement de tester une remise en fonctionnement. Une
-procédure jamais exécutée n'est pas une procédure.
+Le sujet demande explicitement de tester une remise en fonctionnement. **Une
+procédure jamais exécutée n'est pas une procédure** — et celle-ci vient de le
+démontrer à ses dépens : jouée pour la première fois, elle a échoué.
 
-Le scénario à jouer et à chronométrer :
+Le scénario :
 
 1. déposer un fichier, créer un partage, vérifier le téléchargement ;
 2. sauvegarder base **puis** fichiers ;
 3. tout détruire (`docker compose down -v`) ;
-4. remonter, restaurer fichiers **puis** base ;
+4. restaurer fichiers **puis** base, sur une base démarrée seule ;
 5. re-télécharger le **même** fichier et vérifier qu'il est identique.
 
-L'étape 5 est celle qui compte : elle prouve que la clé de fichier chiffrée, le
-contenu chiffré et le tag d'intégrité sont tous revenus cohérents.
+| Étape | Attendu | Obtenu |
+|---|---|---|
+| 1 | Dépôt et lien fonctionnels | ✅ 337 octets, SHA-256 `a74f4a44…`, téléchargement `200` |
+| 2 | Deux artefacts | ✅ dump 14 453 o en **0,6 s** ; archive 510 o en **0,9 s** |
+| 3 | Destruction réelle | ✅ `down -v` en **2,0 s** — plus aucun volume `filemoica_*` |
+| 4 | Restauration sans erreur | ✅ fichiers en **1,1 s** (permissions et uid 1000 préservés), base **0 erreur** |
+| 4 bis | Migrations | ✅ « 7 migrations found — No pending migrations to apply » |
+| 5 | **Contenu identique** | ✅ SHA-256 `a74f4a44…` — **identique au bit près** |
+
+**Durée de la restauration : environ 30 secondes**, démarrage des conteneurs
+compris. La construction de l'image (83 s) n'en fait pas partie : en production
+l'image est déjà là.
+
+L'étape 5 est celle qui compte : le nom `contrat.txt` est revenu déchiffré et le
+lien d'origine fonctionne encore, ce qui prouve que la clé maître, la DEK
+chiffrée, le contenu et le tag d'intégrité sont tous cohérents entre eux.
+
+#### La règle des deux artefacts, vérifiée elle aussi
+
+Le scénario a été rejoué en ne restaurant **que la base**, volume laissé vide :
+
+| Observation | Résultat |
+|---|---|
+| Consultation du lien (`/info`) | **200** — le lien *paraît* valide |
+| Téléchargement | **Échec**, connexion fermée sans contenu |
+| Journal applicatif | `ENOENT … /var/lib/filemoica/storage/189c10ef…` |
+| État du service | **Reste sain** — aucune instance à redémarrer |
+
+« Restaurer l'un sans l'autre ne donne rien d'exploitable » n'est donc plus une
+affirmation de principe : c'est une observation. Et le cas est plus perfide
+qu'un échec franc, puisque la liste des fichiers et les liens semblent intacts.
+
+#### Deux défauts relevés à cette occasion — et corrigés
+
+La répétition n'a pas seulement validé la procédure, elle a mis au jour deux
+défauts du service lui-même. Les deux sont réparés et couverts par des tests.
+
+**1. Un contenu manquant coupait la connexion au lieu de renvoyer une erreur.**
+Le fichier part en flux : quand la lecture échouait, les en-têtes étaient déjà
+émis et le statut ne pouvait plus changer. Le destinataire recevait une
+connexion fermée, sans la moindre explication.
+
+Le service vérifie désormais la présence du contenu **avant** d'écrire quoi que
+ce soit, et répond :
+
+```json
+{ "error": "CONTENT_UNAVAILABLE", "message": "Le contenu de ce fichier est momentanément indisponible." }
+```
+
+**`500` et non `404`** : le lien est valide et le fichier devrait exister. Le
+destinataire n'a rien à corriger de son côté — c'est le service qui a perdu la
+donnée. Un `404` l'enverrait vérifier son lien pour rien.
+
+Le contrôle est placé **avant la réservation** du fichier, de sorte qu'un lien à
+usage unique n'est pas consumé par un échec : une fois le volume remonté, le
+destinataire peut réessayer. C'est le second test ajouté.
+
+**2. Le message d'erreur confondait deux causes sans rapport.** Il annonçait
+« fichier altéré ou clé invalide » alors que la cause réelle était un fichier
+absent — de quoi lancer une enquête sur le chiffrement quand le problème est un
+volume non monté. Les deux cas sont maintenant distingués dans les journaux.
+
+> Le cas du **tag d'intégrité qui ne correspond pas**, lui, reste
+> nécessairement détecté en fin de flux : GCM ne se vérifie qu'au dernier octet.
+> La connexion est alors coupée, volontairement — mieux vaut un téléchargement
+> manifestement interrompu qu'un fichier corrompu que le destinataire croirait
+> valide.
 
 ---
 
