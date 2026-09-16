@@ -6,6 +6,7 @@ import { CryptoModule } from './crypto/crypto.module';
 import { FilesModule } from './files/files.module';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { SharesModule } from './shares/shares.module';
 import { StorageModule } from './storage/storage.module';
 
 @Module({
@@ -22,6 +23,7 @@ import { StorageModule } from './storage/storage.module';
     StorageModule,
     AuthModule,
     FilesModule,
+    SharesModule,
     HealthModule,
   ],
 })

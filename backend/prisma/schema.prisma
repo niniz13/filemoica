@@ -148,14 +148,25 @@ model Share {
   /// création : la base ne permet pas de le reconstituer.
   tokenHash String @unique @map("token_hash")
 
-  /// Email du destinataire, chiffré.
-  recipientEmailEnc String @map("recipient_email_enc")
+  /// Email du destinataire, chiffré. Facultatif.
+  ///
+  /// **Informatif : ne conditionne pas l'accès.** Le lien se suffit à lui-même,
+  /// et son destinataire n'a pas besoin de compte. Cet email sert à savoir à qui
+  /// un partage était destiné, et servira à la notification.
+  recipientEmailEnc String? @map("recipient_email_enc")
 
-  /// Index aveugle : HMAC de l'email, qui permet de comparer le destinataire
-  /// au téléchargement sans avoir à déchiffrer quoi que ce soit.
-  recipientEmailHmac String @map("recipient_email_hmac")
+  /// Index aveugle de l'email, pour retrouver les partages faits à une adresse
+  /// sans avoir à déchiffrer toute la table.
+  recipientEmailHmac String? @map("recipient_email_hmac")
 
+  /// Durée de vie du lien, choisie par le déposant.
   expiresAt DateTime @map("expires_at")
+
+  /// Mot de passe du lien, haché en argon2id. Facultatif.
+  ///
+  /// Quand il est présent, le lien seul ne suffit plus : c'est le second
+  /// facteur qui protège un lien intercepté, transféré ou publié par erreur.
+  passwordHash String? @map("password_hash")
 
   /// Révocation manuelle, indépendante de l'expiration.
   revoked   Boolean   @default(false)
