@@ -1,5 +1,6 @@
-import { plainToInstance } from 'class-transformer';
+import { plainToInstance, Transform } from 'class-transformer';
 import {
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -50,6 +51,13 @@ export class EnvironmentVariables {
   @Min(1)
   @Max(65535)
   PORT: number = 3000;
+
+  /**
+   * Version applicative exposée par `/health`. Renseignée au déploiement par
+   * SRC (tag git), pour pouvoir vérifier quelle version tourne réellement.
+   */
+  @IsString()
+  APP_VERSION: string = 'dev';
 
   /** Chaîne de connexion PostgreSQL, consommée par Prisma. */
   @Matches(/^postgres(ql)?:\/\/.+/, {
@@ -123,6 +131,23 @@ export class EnvironmentVariables {
   @IsOptional()
   @IsString()
   COOKIE_DOMAIN?: string;
+
+  /**
+   * Expose la documentation interactive sur `/api/docs`.
+   *
+   * Activée par défaut : elle sert au front pendant le développement et au jury
+   * pendant la démonstration. Elle décrit la surface de l'API — routes,
+   * paramètres, codes d'erreur — ce qui facilite autant le travail d'un
+   * intégrateur que le repérage d'un attaquant. La couper reste donc possible
+   * en production, sans toucher au code.
+   *
+   * La conversion est explicite : la conversion automatique transformerait la
+   * chaîne `"false"` en booléen `true`, puisque toute chaîne non vide est
+   * considérée comme vraie.
+   */
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  ENABLE_API_DOCS: boolean = true;
 }
 
 /**

@@ -1,0 +1,181 @@
+// Schéma de la base filemoica.
+//
+// ## Principe directeur
+//
+// Une fuite de la base seule ne doit rien donner d'exploitable. Trois moyens :
+//
+//   1. Chiffrement enveloppe. Le contenu des fichiers vit sur le disque,
+//      chiffré par une clé propre à chaque fichier (DEK). Seule cette DEK est
+//      en base, elle-même chiffrée par la clé maître (KEK) qui, elle, n'est
+//      QUE dans les variables d'environnement. Sans le `.env`, les colonnes
+//      `dek_wrapped` ne servent à rien.
+//   2. Champs sensibles chiffrés. Noms de fichiers et emails de destinataires
+//      sont stockés chiffrés en AES-256-GCM.
+//   3. Jetons hachés. Ni les liens de partage ni les refresh tokens ne sont
+//      stockés en clair : seulement leur SHA-256. Voler la base ne permet donc
+//      pas de rejouer un lien.
+//
+// ## Format des colonnes chiffrées
+//
+// Les colonnes suffixées `_enc` contiennent une chaîne compacte :
+//
+//     <version>.<iv_base64>.<authTag_base64>.<chiffré_base64>
+//
+// Tout tenir dans une colonne évite d'en multiplier trois par champ chiffré.
+//
+// ## Ce qui reste en clair, et pourquoi
+//
+// `users.email` : le login doit pouvoir chercher par email. Le chiffrer
+// imposerait un index aveugle pour un gain faible — la donnée sensible d'un
+// partage, c'est l'email du destinataire, et celui-là est chiffré.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+/// Compte utilisateur.
+model User {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// En clair : sert de critère de recherche à la connexion.
+  email String @unique
+
+  /// Empreinte argon2id. Le mot de passe lui-même n'existe nulle part.
+  passwordHash String @map("password_hash")
+
+  role      Role     @default(USER)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  files         File[]
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+/// Un fichier déposé. Son contenu est sur le disque, jamais en base.
+model File {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Nom aléatoire sur le disque. Le nom d'origine n'y apparaît jamais :
+  /// un simple `ls` du répertoire de stockage ne révèle rien.
+  storageName String @unique @map("storage_name")
+
+  /// Nom d'origine, chiffré.
+  originalNameEnc String @map("original_name_enc")
+
+  /// Clé du fichier (DEK), chiffrée par la clé maître.
+  dekWrapped String @map("dek_wrapped")
+
+  /// Version de la clé maître ayant chiffré la DEK. C'est ce qui permet une
+  /// rotation : on re-chiffre les DEK, pas les fichiers.
+  keyVersion String @default("v1") @map("key_version")
+
+  /// Vecteur d'initialisation du contenu, unique par fichier.
+  contentIv String @map("content_iv")
+
+  /// Tag d'authentification GCM du contenu. Il détecte toute altération du
+  /// fichier sur le disque : sans lui, on servirait un fichier corrompu.
+  contentAuthTag String @map("content_auth_tag")
+
+  sizeBytes Int      @map("size_bytes")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  ownerId String @map("owner_id") @db.Uuid
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  shares Share[]
+
+  @@index([ownerId])
+  @@map("files")
+}
+
+/// Un lien de partage vers un fichier, à destination d'un email précis.
+model Share {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// SHA-256 du jeton. Le jeton en clair n'est montré qu'une fois, à la
+  /// création : la base ne permet pas de le reconstituer.
+  tokenHash String @unique @map("token_hash")
+
+  /// Email du destinataire, chiffré.
+  recipientEmailEnc String @map("recipient_email_enc")
+
+  /// Index aveugle : HMAC de l'email, qui permet de comparer le destinataire
+  /// au téléchargement sans avoir à déchiffrer quoi que ce soit.
+  recipientEmailHmac String @map("recipient_email_hmac")
+
+  expiresAt DateTime @map("expires_at")
+
+  /// Révocation manuelle, indépendante de l'expiration.
+  revoked   Boolean   @default(false)
+  revokedAt DateTime? @map("revoked_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  fileId String @map("file_id") @db.Uuid
+  file   File   @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([fileId])
+  @@index([recipientEmailHmac])
+  @@map("shares")
+}
+
+/// Refresh token, stocké haché.
+///
+/// `familyId` regroupe tous les jetons issus d'une même connexion. Si un jeton
+/// déjà utilisé est rejoué, c'est qu'il a été volé : on révoque alors la
+/// famille entière plutôt que ce seul jeton.
+model RefreshToken {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// SHA-256 du jeton opaque envoyé au client.
+  tokenHash String @unique @map("token_hash")
+
+  /// Identifiant de la lignée de jetons, conservé à chaque rotation.
+  familyId String @map("family_id") @db.Uuid
+
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+
+  /// Jeton qui a remplacé celui-ci lors d'une rotation. Sa présence signifie
+  /// que ce jeton-ci a déjà servi.
+  replacedById String? @map("replaced_by_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// Access tokens révoqués avant leur expiration naturelle (déconnexion).
+///
+/// Un JWT est autoportant : on ne peut pas l'annuler, seulement tenir la liste
+/// de ceux qu'on refuse. Comme ils vivent 15 minutes, cette table reste
+/// minuscule — une purge périodique suffit à la vider.
+model RevokedAccessToken {
+  /// Identifiant unique du JWT (claim `jti`).
+  jti String @id
+
+  /// Fin de vie naturelle du jeton : au-delà, la ligne ne sert plus à rien.
+  expiresAt DateTime @map("expires_at")
+
+  revokedAt DateTime @default(now()) @map("revoked_at")
+
+  @@index([expiresAt])
+  @@map("revoked_access_tokens")
+}

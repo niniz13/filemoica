@@ -20,7 +20,7 @@ import 'reflect-metadata';
 process.env.NODE_ENV ??= 'test';
 process.env.PORT ??= '3000';
 process.env.DATABASE_URL ??=
-  'postgresql://filemoica:filemoica@localhost:5432/filemoica_test';
+  'postgresql://filemoica:filemoica@localhost:5433/filemoica_test';
 process.env.JWT_SECRET ??= 'secret-de-test-strictement-non-productif-0000';
 process.env.JWT_ACCESS_TTL ??= '15m';
 process.env.REFRESH_TOKEN_TTL_DAYS ??= '7';

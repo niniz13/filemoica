@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { AuthModule } from './auth/auth.module';
 import { validateEnv } from './config/env.validation';
+import { CryptoModule } from './crypto/crypto.module';
+import { HealthModule } from './health/health.module';
+import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
   imports: [
@@ -13,8 +15,10 @@ import { validateEnv } from './config/env.validation';
       validate: validateEnv,
       cache: true,
     }),
+    PrismaModule,
+    CryptoModule,
+    AuthModule,
+    HealthModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
 })
 export class AppModule {}

@@ -3,6 +3,10 @@
 /node_modules
 /build
 
+# Client Prisma généré : reconstruit par `npx prisma generate`, donc jamais
+# versionné. Le schéma et les migrations, eux, le sont.
+/src/generated
+
 # TypeScript build cache
 *.tsbuildinfo
 
