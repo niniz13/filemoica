@@ -119,6 +119,58 @@ export class FilesService {
   }
 
   /**
+   * Efface un fichier dont plus aucun lien ne permet le téléchargement.
+   *
+   * Appelé après qu'un lien à usage unique a servi. **Sans contrôle de
+   * propriétaire** : c'est une décision du système, prise en application de ce
+   * que le déposant avait demandé au moment du partage.
+   *
+   * La vérification préalable est essentielle : le déposant a pu créer
+   * plusieurs liens sur le même fichier, et effacer sans regarder casserait
+   * silencieusement les autres.
+   *
+   * @returns `true` si le fichier a réellement été effacé.
+   */
+  async removeIfNoUsableShare(fileId: string): Promise<boolean> {
+    const exploitables = await this.prisma.share.count({
+      where: {
+        fileId,
+        revoked: false,
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (exploitables > 0) {
+      this.logger.log(
+        `Fichier ${fileId} conservé : ${exploitables} lien(s) encore exploitable(s)`,
+      );
+      return false;
+    }
+
+    const file = await this.prisma.file.findUnique({
+      where: { id: fileId },
+      select: { storageName: true },
+    });
+
+    if (!file) {
+      return false;
+    }
+
+    // La base d'abord : les partages tombent en cascade, et le fichier
+    // disparaît de la liste du déposant. C'est bien ce qui a été demandé — la
+    // donnée ne survit pas à sa transmission.
+    await this.prisma.file.delete({ where: { id: fileId } });
+    await this.storage.remove(file.storageName);
+
+    this.logger.log(
+      `Fichier ${fileId} effacé du serveur après un téléchargement à usage unique`,
+    );
+
+    return true;
+  }
+
+  /**
    * Récupère un fichier en vérifiant qu'il appartient bien au demandeur.
    *
    * Renvoie **404 et non 403** quand le fichier appartient à quelqu'un d'autre.

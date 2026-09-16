@@ -1,5 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
@@ -28,6 +30,7 @@ describe('Partages (e2e)', () => {
   let prisma: PrismaService;
 
   const CSRF = ['X-Requested-With', 'XMLHttpRequest'] as const;
+  const storageRoot = resolve(process.env.STORAGE_PATH ?? './storage-test');
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -85,6 +88,7 @@ describe('Partages (e2e)', () => {
       recipientEmail?: string;
       expiresInHours?: number;
       password?: string;
+      burnAfterDownload?: boolean;
     } = {},
   ): Promise<{ id: string; token: string }> {
     const response = await request(app.getHttpServer())
@@ -339,6 +343,190 @@ describe('Partages (e2e)', () => {
         .set('Cookie', alice)
         .send({ fileId, recipientEmail: 'pas-un-email', expiresInHours: 24 })
         .expect(400);
+    });
+  });
+
+  describe('Lien à usage unique', () => {
+    it('sert le fichier au premier téléchargement', async () => {
+      const alice = await connecter(ALICE);
+      const { token } = await partager(alice, await deposer(alice), {
+        burnAfterDownload: true,
+      });
+
+      const download = await request(app.getHttpServer())
+        .get(`/api/download/${token}`)
+        .expect(200);
+
+      expect(download.body.toString('utf8')).toBe(CONTENU);
+    });
+
+    // Le fichier ayant été effacé, la ligne du partage a disparu avec lui : il
+    // ne reste littéralement rien, d'où le 404 plutôt qu'un 410. C'est même
+    // préférable — on ne peut pas distinguer « déjà utilisé » de « n'a jamais
+    // existé ».
+    it('refuse le second téléchargement — 404, plus rien n\'existe', async () => {
+      const alice = await connecter(ALICE);
+      const { token } = await partager(alice, await deposer(alice), {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(`/api/download/${token}`)
+        .expect(200);
+
+      const second = await request(app.getHttpServer())
+        .get(`/api/download/${token}`)
+        .expect(404);
+
+      expect(second.body.error).toBe('SHARE_NOT_FOUND');
+    });
+
+    // Quand le fichier survit — parce qu'un autre lien l'utilise — la ligne du
+    // partage reste, et on peut dire précisément ce qui s'est passé.
+    it('répond 410 sur un lien consommé dont le fichier survit', async () => {
+      const alice = await connecter(ALICE);
+      const fileId = await deposer(alice);
+      const jetable = await partager(alice, fileId, {
+        burnAfterDownload: true,
+      });
+      await partager(alice, fileId);
+
+      await request(app.getHttpServer())
+        .get(`/api/download/${jetable.token}`)
+        .expect(200);
+
+      const second = await request(app.getHttpServer())
+        .get(`/api/download/${jetable.token}`)
+        .expect(410);
+
+      expect(second.body.error).toBe('SHARE_ALREADY_USED');
+    });
+
+    // La promesse forte du service : la donnée ne survit pas à sa transmission.
+    it('efface le fichier du serveur après le téléchargement', async () => {
+      const alice = await connecter(ALICE);
+      const fileId = await deposer(alice);
+
+      const stocke = await prisma.file.findUniqueOrThrow({
+        where: { id: fileId },
+        select: { storageName: true },
+      });
+
+      const { token } = await partager(alice, fileId, {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(`/api/download/${token}`)
+        .expect(200);
+
+      // Ni en base...
+      expect(await prisma.file.count({ where: { id: fileId } })).toBe(0);
+      // ...ni sur le disque.
+      await expect(
+        readFile(join(storageRoot, stocke.storageName)),
+      ).rejects.toThrow();
+    });
+
+    it('disparaît aussi de la liste du déposant', async () => {
+      const alice = await connecter(ALICE);
+      const { token } = await partager(alice, await deposer(alice), {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(`/api/download/${token}`)
+        .expect(200);
+
+      const fichiers = await request(app.getHttpServer())
+        .get('/api/files')
+        .set('Cookie', alice)
+        .expect(200);
+
+      expect(fichiers.body).toEqual([]);
+    });
+
+    // Sans cette vérification, brûler un lien détruirait silencieusement les
+    // autres partages du même fichier.
+    it('conserve le fichier s\'il lui reste un autre lien exploitable', async () => {
+      const alice = await connecter(ALICE);
+      const fileId = await deposer(alice);
+
+      const jetable = await partager(alice, fileId, {
+        burnAfterDownload: true,
+      });
+      const durable = await partager(alice, fileId);
+
+      await request(app.getHttpServer())
+        .get(`/api/download/${jetable.token}`)
+        .expect(200);
+
+      // Le fichier est toujours là, et l'autre lien fonctionne encore.
+      expect(await prisma.file.count({ where: { id: fileId } })).toBe(1);
+      await request(app.getHttpServer())
+        .get(`/api/download/${durable.token}`)
+        .expect(200);
+    });
+
+    it('signale au destinataire que le lien ne servira qu\'une fois', async () => {
+      const alice = await connecter(ALICE);
+      const { token } = await partager(alice, await deposer(alice), {
+        burnAfterDownload: true,
+      });
+
+      const info = await request(app.getHttpServer())
+        .get(`/api/download/${token}/info`)
+        .expect(200);
+
+      expect(info.body.singleUse).toBe(true);
+    });
+
+    // Deux personnes ouvrent le lien en même temps : une seule doit l'obtenir.
+    it('ne laisse passer qu\'un seul téléchargement simultané', async () => {
+      const alice = await connecter(ALICE);
+      const { token } = await partager(alice, await deposer(alice), {
+        burnAfterDownload: true,
+      });
+
+      const [un, deux] = await Promise.all([
+        request(app.getHttpServer()).get(`/api/download/${token}`),
+        request(app.getHttpServer()).get(`/api/download/${token}`),
+      ]);
+
+      const codes = [un.status, deux.status].sort((a, b) => a - b);
+      expect(codes).toEqual([200, 410]);
+    });
+
+    it('reste un lien ordinaire quand l\'option n\'est pas demandée', async () => {
+      const alice = await connecter(ALICE);
+      const { token } = await partager(alice, await deposer(alice));
+
+      // Deux téléchargements de suite, sans encombre.
+      await request(app.getHttpServer())
+        .get(`/api/download/${token}`)
+        .expect(200);
+      await request(app.getHttpServer())
+        .get(`/api/download/${token}`)
+        .expect(200);
+    });
+
+    it('combine usage unique et mot de passe', async () => {
+      const alice = await connecter(ALICE);
+      const { token } = await partager(alice, await deposer(alice), {
+        burnAfterDownload: true,
+        password: 'secret-du-lien',
+      });
+
+      // Un essai raté ne doit pas consumer le lien.
+      await request(app.getHttpServer())
+        .get(`/api/download/${token}`)
+        .set('X-Share-Password', 'mauvais')
+        .expect(403);
+
+      await request(app.getHttpServer())
+        .get(`/api/download/${token}`)
+        .set('X-Share-Password', 'secret-du-lien')
+        .expect(200);
     });
   });
 

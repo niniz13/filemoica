@@ -168,6 +168,19 @@ model Share {
   /// facteur qui protège un lien intercepté, transféré ou publié par erreur.
   passwordHash String? @map("password_hash")
 
+  /// Lien à usage unique : il se consume au premier téléchargement réussi.
+  ///
+  /// Quand le fichier n'a plus aucun autre lien exploitable, il est alors
+  /// **effacé du serveur**. C'est la garantie la plus forte que le service
+  /// puisse offrir : la donnée ne survit pas à sa transmission.
+  burnAfterDownload Boolean @default(false) @map("burn_after_download")
+
+  /// Date du téléchargement qui a consumé le lien. Nulle tant qu'il est vierge.
+  ///
+  /// Sert aussi de verrou : une mise à jour conditionnée à sa nullité garantit
+  /// qu'un seul téléchargement simultané l'emporte.
+  consumedAt DateTime? @map("consumed_at")
+
   /// Révocation manuelle, indépendante de l'expiration.
   revoked   Boolean   @default(false)
   revokedAt DateTime? @map("revoked_at")

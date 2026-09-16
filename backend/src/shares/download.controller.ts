@@ -124,6 +124,12 @@ export class DownloadController {
     // tant qu'ils ne sont pas tous passés.
     const granted = await this.shares.authorizeDownload(token, password);
 
+    // Un lien à usage unique est réservé **avant** l'envoi : deux
+    // téléchargements simultanés ne doivent pas réussir tous les deux.
+    if (granted.burnAfterDownload) {
+      await this.shares.claimSingleUse(granted.shareId);
+    }
+
     this.harden(response, granted.originalName);
 
     const dataKey = this.crypto.open(granted.dekWrapped);
@@ -136,10 +142,15 @@ export class DownloadController {
     try {
       // Déchiffrement à la volée : le fichier n'existe en clair que dans le
       // flux qui part vers le destinataire, jamais sur le disque du serveur.
+      //
+      // `end: false` laisse la réponse ouverte : sans cela elle se refermerait
+      // dès le dernier octet, et la consommation du lien s'exécuterait après
+      // coup — invisible du client, et impossible à signaler en cas d'échec.
       await pipeline(
         await this.storage.openRead(granted.storageName),
         decipher,
         response,
+        { end: false },
       );
     } catch (error) {
       // L'intégrité GCM se vérifie à la fin du flux, donc après l'envoi des
@@ -151,8 +162,34 @@ export class DownloadController {
         error instanceof Error ? error.stack : String(error),
       );
 
+      // Le transfert a échoué : le lien est rendu. Détruire le fichier alors
+      // que le destinataire n'a rien reçu serait le pire des deux mondes.
+      if (granted.burnAfterDownload) {
+        await this.shares.releaseSingleUse(granted.shareId);
+      }
+
       response.destroy();
+      return;
     }
+
+    // Le fichier est parti en entier : le lien est définitivement consommé, et
+    // le fichier effacé s'il ne lui reste aucun autre lien exploitable.
+    if (granted.burnAfterDownload) {
+      try {
+        await this.shares.completeSingleUse(granted.shareId, granted.fileId);
+      } catch (error) {
+        // Le contenu est déjà parti : on ne peut plus rien signaler au client,
+        // et tenter de le faire échouerait sur une réponse déjà entamée. Le
+        // lien reste marqué consommé, donc inutilisable — il ne subsiste au
+        // pire qu'un fichier qui aurait dû disparaître, à nettoyer à la main.
+        this.logger.error(
+          `Le fichier ${granted.fileId} n'a pas pu être effacé après un téléchargement à usage unique`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
+    }
+
+    response.end();
   }
 
   /**

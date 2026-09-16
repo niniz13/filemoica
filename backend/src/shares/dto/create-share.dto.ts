@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsBoolean,
   IsEmail,
   IsInt,
   IsOptional,
@@ -51,6 +52,15 @@ export class CreateShareDto {
   @IsEmail({}, { message: 'Email du destinataire invalide.' })
   @MaxLength(255)
   recipientEmail?: string;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Lien à usage unique : il se consume au premier téléchargement réussi, et le fichier est effacé du serveur s\'il ne lui reste aucun autre lien exploitable. **Irréversible** — prévenir l\'utilisateur avant de cocher.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  burnAfterDownload: boolean = false;
 
   @ApiPropertyOptional({
     minLength: MIN_PASSWORD_LENGTH,
