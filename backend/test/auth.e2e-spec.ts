@@ -202,6 +202,52 @@ describe('Authentification (e2e)', () => {
       expect(response.body.email).toBe(EMAIL);
     });
 
+    it('renvoie le rôle du compte', async () => {
+      const cookies = await connecter();
+
+      const response = await request(app.getHttpServer())
+        .get('/api/auth/me')
+        .set('Cookie', cookies)
+        .expect(200);
+
+      expect(response.body.role).toBe('USER');
+    });
+
+    // La raison d'être de la relecture en base : le rôle n'est pas porté par le
+    // jeton. S'il l'était, une promotion ou une rétrogradation n'apparaîtrait
+    // qu'à l'expiration de la session — jusqu'à quinze minutes plus tard.
+    it('reflète un changement de rôle sans reconnexion', async () => {
+      const cookies = await connecter();
+
+      await prisma.user.updateMany({
+        where: { email: EMAIL },
+        data: { role: 'ADMIN' },
+      });
+
+      const response = await request(app.getHttpServer())
+        .get('/api/auth/me')
+        .set('Cookie', cookies)
+        .expect(200);
+
+      // Les mêmes cookies, un rôle différent.
+      expect(response.body.role).toBe('ADMIN');
+    });
+
+    // Un jeton peut rester valide alors que le compte a disparu : la signature
+    // ne prouve que l'émission, pas que le compte existe encore.
+    it('refuse une session dont le compte a été supprimé', async () => {
+      const cookies = await connecter();
+
+      await prisma.user.deleteMany({ where: { email: EMAIL } });
+
+      const response = await request(app.getHttpServer())
+        .get('/api/auth/me')
+        .set('Cookie', cookies)
+        .expect(401);
+
+      expect(response.body.error).toBe('SESSION_INVALID');
+    });
+
     // Le test central du critère « accès vérifiés ».
     it('refuse une requête sans cookie', async () => {
       const response = await request(app.getHttpServer())

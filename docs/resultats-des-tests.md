@@ -170,12 +170,12 @@ Exécution réelle sur la base de développement :
 | Commande | Résultat | Date |
 |---|---|---|
 | `npm test` | **128 / 128** | 16/09 |
-| `npm run test:e2e` | **163 / 163** (8 suites) | 16/09 |
+| `npm run test:e2e` | **166 / 166** (8 suites) | 16/09 |
 | `npm run lint` | 0 avertissement | 16/09 |
 | `npx tsc --noEmit` | 0 erreur | 16/09 |
 | `npm run build` | Succès | 16/09 |
 
-**291 tests**, dont 163 de bout en bout contre une vraie base PostgreSQL et un
+**294 tests**, dont 166 de bout en bout contre une vraie base PostgreSQL et un
 vrai répertoire de stockage — pas des doubles.
 
 ---

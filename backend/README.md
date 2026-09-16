@@ -202,7 +202,7 @@ npx tsc --noEmit         # vérification de types
 | Conservation et purge automatique des fichiers | ✅ implémenté et testé |
 | Conteneurisation (image non-root, durcie) | ✅ construite, lancée et auditée |
 
-**291 tests au vert** (128 unitaires, 163 end-to-end), analyse statique et
+**294 tests au vert** (128 unitaires, 166 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 **Le parcours utilisateur est complet** : déposer, partager, télécharger,
