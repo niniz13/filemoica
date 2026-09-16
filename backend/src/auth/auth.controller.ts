@@ -218,8 +218,19 @@ export class AuthController {
     type: ApiErrorResponse,
   })
   @Get('me')
-  me(@CurrentUser() user: AccessTokenPayload): CurrentUserResponse {
-    return { id: user.sub, email: user.email };
+  async me(@CurrentUser() user: AccessTokenPayload): Promise<CurrentUserResponse> {
+    const account = await this.auth.findById(user.sub);
+
+    if (!account) {
+      // Le jeton est valide mais le compte a disparu entre-temps (suppression,
+      // par exemple) : la session n'a plus de sens.
+      throw new UnauthorizedException({
+        error: 'SESSION_INVALID',
+        message: 'Ce compte n\'existe plus.',
+      });
+    }
+
+    return account;
   }
 
   /**
