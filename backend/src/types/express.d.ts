@@ -12,6 +12,14 @@ declare global {
   namespace Express {
     interface Request {
       user?: AccessTokenPayload;
+
+      /**
+       * Solde de quota mensuel, en octets, déposé par le garde de quota.
+       *
+       * Le moteur de réception s'en sert pour interrompre un dépôt à l'octet
+       * près, sans avoir à interroger la base au milieu du flux.
+       */
+      quotaRemainingBytes?: number;
     }
   }
 }

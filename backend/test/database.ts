@@ -18,6 +18,7 @@ export async function resetDatabase(prisma: PrismaService): Promise<void> {
     TRUNCATE TABLE
       "revoked_access_tokens",
       "refresh_tokens",
+      "monthly_usage",
       "shares",
       "files",
       "users"

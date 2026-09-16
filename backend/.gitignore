@@ -7,6 +7,11 @@
 # versionné. Le schéma et les migrations, eux, le sont.
 /src/generated
 
+# Fichiers déposés par les utilisateurs. Chiffrés, mais ils n'ont rien à faire
+# dans le dépôt : en production ils vivent dans un volume géré par SRC.
+/storage
+/storage-test
+
 # TypeScript build cache
 *.tsbuildinfo
 

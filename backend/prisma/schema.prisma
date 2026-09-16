@@ -43,6 +43,17 @@ enum Role {
   ADMIN
 }
 
+/// Offre souscrite. Détermine le volume mensuel autorisé.
+///
+/// Le passage en `PREMIUM` se fait pour l'instant directement en base : le
+/// service démontre la mécanique du quota, pas l'encaissement. Brancher un
+/// prestataire de paiement reviendrait à écrire cette même valeur après une
+/// transaction réussie.
+enum Plan {
+  FREE
+  PREMIUM
+}
+
 /// Compte utilisateur.
 model User {
   id String @id @default(uuid()) @db.Uuid
@@ -54,12 +65,42 @@ model User {
   passwordHash String @map("password_hash")
 
   role      Role     @default(USER)
+  plan      Plan     @default(FREE)
   createdAt DateTime @default(now()) @map("created_at")
 
   files         File[]
   refreshTokens RefreshToken[]
+  monthlyUsage  MonthlyUsage[]
 
   @@map("users")
+}
+
+/// Volume déposé par un compte au cours d'un mois.
+///
+/// ## Pourquoi une table plutôt qu'une somme sur `files`
+///
+/// Additionner la taille des fichiers présents mesurerait l'espace **occupé**,
+/// pas le volume **déposé** : supprimer un fichier rendrait du quota, et il
+/// suffirait d'envoyer puis d'effacer en boucle pour contourner l'offre.
+///
+/// Ce compteur ne bouge qu'à la hausse. Une ligne par mois et par compte, donc
+/// aucune remise à zéro à programmer : le mois suivant crée simplement une
+/// nouvelle ligne.
+model MonthlyUsage {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Mois concerné, au format `AAAA-MM`.
+  period String
+
+  /// Cumul en octets. `BigInt` car une offre payante dépasse les 2 Go que
+  /// peut représenter un entier 32 bits.
+  bytes BigInt @default(0)
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, period])
+  @@map("monthly_usage")
 }
 
 /// Un fichier déposé. Son contenu est sur le disque, jamais en base.

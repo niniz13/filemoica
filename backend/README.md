@@ -18,6 +18,7 @@ qu'on ne confonde jamais l'intention et le code qui tourne.
 - [Choix techniques](#choix-techniques)
 - [Sécurité : ce qui est en place](#sécurité--ce-qui-est-en-place)
 - [Authentification](#authentification)
+- [Fichiers](#fichiers)
 - [Modèle de données](#modèle-de-données)
 - [Supervision et incident](#supervision-et-incident)
 - [Contrats avec le reste de l'équipe](#contrats-avec-le-reste-de-léquipe)
@@ -182,10 +183,10 @@ npx tsc --noEmit         # vérification de types
 | Chiffrement (enveloppe, index aveugle, jetons) | ✅ implémenté et testé |
 | Authentification (inscription, connexion, sessions, révocation) | ✅ implémenté et testé |
 | Documentation OpenAPI (`/api/docs`) | ✅ implémenté et testé |
-| Dépôt et téléchargement de fichiers | ⬜ schéma en base, endpoints à écrire |
-| Partages et révocation | ⬜ schéma en base, endpoints à écrire |
+| Dépôt, liste et suppression de fichiers | ✅ implémenté et testé |
+| Partages, révocation et téléchargement | ⬜ schéma en base, routes à écrire |
 
-**142 tests au vert** (100 unitaires, 42 end-to-end), analyse statique et
+**177 tests au vert** (100 unitaires, 77 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 ---
@@ -457,6 +458,126 @@ ouverte à tous, qu'on ne remarque jamais.
 
 ---
 
+## Fichiers
+
+| Méthode | Route | Rôle |
+|---|---|---|
+| `POST` | `/api/files` | Dépose un fichier (`multipart/form-data`, champ `file`) |
+| `GET` | `/api/files` | Liste ses propres fichiers |
+| `GET` | `/api/files/quota` | Volume déposé ce mois-ci et solde restant |
+| `DELETE` | `/api/files/:id` | Supprime un fichier et son contenu |
+
+### Le chiffrement a lieu pendant la réception
+
+Les deux modes de réception fournis par la bibliothèque standard étaient
+inutilisables ici :
+
+- écrire d'abord sur le disque puis chiffrer laisserait le contenu **en clair**,
+  ne serait-ce qu'un instant — et définitivement si le service s'arrêtait
+  entre-temps ;
+- tout garder en mémoire ferait tomber le service au bout de quelques dépôts
+  simultanés.
+
+Un [moteur de réception sur mesure](src/files/encrypted-upload.storage.ts)
+branche donc le chiffrement directement sur le flux entrant. Les octets passent
+de la requête au fichier chiffré **sans jamais s'arrêter en clair**, ni sur le
+disque ni en mémoire.
+
+C'est ce qui permet d'affirmer, sans nuance : à aucun moment le serveur ne
+détient une version lisible d'un fichier déposé.
+
+### Cloisonnement entre utilisateurs
+
+Le filtre sur le propriétaire est appliqué **par la requête en base**, pas après
+coup : un fichier d'autrui ne remonte jamais, même le temps d'un traitement.
+
+La suppression d'un fichier appartenant à quelqu'un d'autre renvoie **404, pas
+403**. Un 403 confirmerait l'existence du fichier : en essayant des
+identifiants, on pourrait dénombrer les fichiers du service. Le 404 ne distingue
+pas « n'existe pas » de « n'est pas à vous ».
+
+### Contrôle du format par les octets, pas par l'extension
+
+L'extension et le type annoncé viennent tous deux du client : renommer
+`virus.exe` en `rapport.pdf` suffirait à tromper une vérification qui s'y
+fierait. Le [contrôle](src/files/mime-sniffer.stream.ts) lit donc les **octets de
+signature** du fichier.
+
+Il est placé **dans le flux, avant le chiffrement** : un format refusé n'est
+jamais écrit sur le disque. Seuls quatre kilo-octets sont retenus en mémoire, y
+compris pour un fichier de 200 Mo.
+
+Les [formats acceptés](src/files/allowed-types.ts) couvrent documents, images,
+vidéo, audio et archives. En ajouter un tient en une ligne.
+
+**Cas particulier du texte.** Un `.txt` ou un `.csv` n'a aucune signature —
+rien ne le distingue d'un fragment quelconque. Ces formats sont donc acceptés
+sur la foi du type déclaré, doublée d'une vérification sommaire du contenu
+(absence d'octet nul). Sans cette porte, aucun fichier texte ne passerait ; sans
+la vérification, il suffirait de déclarer `text/plain` pour contourner la liste.
+
+**Ce que ce contrôle ne fait pas**, et qu'il ne faut pas prétendre : il ne
+détecte ni un document porteur de macros, ni un PDF piégé, ni une archive
+malveillante — tous figurent dans les formats acceptés. Seule une analyse
+antivirale les repérerait, et elle est impossible sur un contenu chiffré dès sa
+réception.
+
+La liste sert donc surtout à **définir le périmètre du service**. La protection
+réelle est ailleurs : le serveur n'exécute ni n'affiche jamais un fichier
+déposé, et le téléchargement force l'enregistrement plutôt que l'ouverture dans
+le navigateur.
+
+### Limites appliquées
+
+| Limite | Valeur | Raison |
+|---|---|---|
+| Taille d'un fichier | `MAX_FILE_SIZE_MB`, **200 par défaut** | Sans borne, un seul dépôt peut remplir le disque |
+| Fichiers par requête | 1 | Réduire ce qu'on accepte réduit ce qu'il faut valider |
+| Champs supplémentaires | 0 | Idem |
+
+Un dépôt interrompu, trop volumineux ou d'un format refusé voit son contenu
+partiel **retiré du support** : sans cela, chaque échec laisserait un fichier
+orphelin que personne ne nettoierait.
+
+### Quota mensuel et offres
+
+Deux offres, portées par le champ `plan` du compte :
+
+| Offre | Volume mensuel | Variable |
+|---|---|---|
+| Gratuite | 200 Mo | `FREE_PLAN_QUOTA_MB` |
+| Payante | 20 Go | `PREMIUM_PLAN_QUOTA_MB` |
+
+Les valeurs sont dans la configuration : ajuster l'offre après un retour
+d'utilisateur ne demande pas de modifier le code.
+
+**Aucun module de paiement.** Le passage en offre payante se fait en écrivant
+`PREMIUM` dans la base. Ce qui est démontré, c'est la **mécanique du quota** —
+brancher un prestataire reviendrait à écrire cette même valeur après une
+transaction réussie.
+
+**Le quota mesure ce qui a été déposé, pas l'espace occupé.** Supprimer un
+fichier ne rend donc pas de quota : sinon, envoyer puis effacer en boucle
+suffirait à contourner l'offre gratuite. Un test le vérifie.
+
+Le compteur vit dans une table `monthly_usage`, une ligne par compte et par
+mois. Aucune remise à zéro n'est à programmer : le mois suivant crée simplement
+une nouvelle ligne.
+
+Un dépassement répond **402 Paiement requis**, et non 413. Le code dit ce dont
+il s'agit : la requête est légitime, c'est l'offre qui est atteinte. Le front
+peut y accrocher sa proposition de passage à l'offre supérieure, là où un 413 ne
+parlerait que de taille.
+
+> **Où le refus a lieu, et pourquoi.** Le contrôle s'applique **pendant** la
+> réception, à l'octet de trop, et non avant l'envoi. Refuser plus tôt sur la
+> foi de la taille annoncée a été essayé puis abandonné : répondre avant que le
+> client ait fini d'envoyer coupe la connexion, et il reçoit une erreur réseau
+> au lieu du message expliquant que son quota est atteint. C'est le même
+> compromis que celui de la taille maximale.
+
+---
+
 ## Modèle de données
 
 Cinq tables, identifiants UUID, migration `20260915145703_init`.
@@ -467,6 +588,7 @@ Le schéma commenté est dans [`prisma/schema.prisma`](prisma/schema.prisma).
 | `users` | Comptes | `password_hash` |
 | `files` | Métadonnées des fichiers | `original_name_enc`, `dek_wrapped`, `key_version`, `content_iv`, `content_auth_tag`, `storage_name` |
 | `shares` | Liens de partage | `token_hash`, `recipient_email_enc`, `recipient_email_hmac`, `expires_at`, `revoked` |
+| `monthly_usage` | Quota déposé par mois | `period`, `bytes` (cumul, ne décroît jamais) |
 | `refresh_tokens` | Sessions longues | `token_hash`, `family_id`, `revoked_at`, `replaced_by_id` |
 | `revoked_access_tokens` | Déconnexions | `jti`, `expires_at` |
 
@@ -639,29 +761,35 @@ Les tests les plus significatifs pour l'évaluation :
 | Un formulaire posté depuis un site tiers est bloqué | `csrf.guard.spec.ts` |
 | La sonde bascule en 503 quand la base tombe | `health.e2e-spec.ts` |
 | Un secret mal formé ne fuite pas dans les logs | `env.validation.spec.ts` |
+| Un fichier déposé est illisible sur le disque | `files.e2e-spec.ts` |
+| …et reste pourtant récupérable avec sa clé | `files.e2e-spec.ts` |
+| Un utilisateur ne voit pas les fichiers d'un autre | `files.e2e-spec.ts` |
+| Le fichier d'autrui renvoie 404, pas 403 | `files.e2e-spec.ts` |
+| Un exécutable déguisé en PDF est refusé | `files.e2e-spec.ts` |
 
 ---
 
 ## Points ouverts
 
-### Stockage des fichiers et résilience — **à arbitrer avec SRC**
+### Limites assumées
 
-Le développement se fait contre une variable `STORAGE_PATH`, ce qui laisse le
-choix ouvert entre un volume Docker nommé et un stockage objet (S3/MinIO) sans
-rien réécrire *tant qu'il s'agit d'un chemin de système de fichiers*.
+Le stockage des fichiers a été arbitré avec SRC le 16/09 : **volume Docker
+nommé** monté sur `STORAGE_PATH`, sur une VM unique. Le raisonnement complet et
+les options écartées sont dans
+[docs/decision-stockage-fichiers.md](../docs/decision-stockage-fichiers.md).
 
-Un volume nommé est plus simple et réduit la surface d'attaque — comme le
-contenu est déjà chiffré par l'application, le support de stockage ne protège
-plus grand-chose, et un stockage objet ajouterait une paire de clés d'accès à
-protéger.
+Trois limites en découlent, assumées plutôt que passées sous silence :
 
-**Mais un volume nommé attache les fichiers à une machine.** Il ne permet ni
-plusieurs instances derrière un répartiteur de charge, ni le redémarrage du
-service sur un autre hôte. Si l'objectif de résilience inclut ces cas, il faut du
-stockage partagé, et l'arbitrage change.
+- **Les fichiers sont attachés à une machine.** Perdre la VM revient à perdre les
+  fichiers déposés depuis la dernière sauvegarde.
+- **Une seule instance.** Pas de répartition de charge ni de bascule
+  automatique : monter en charge signifie ici agrandir la machine.
+- **Le service est indisponible pendant un redémarrage**, quelques secondes.
 
-**Échéance :** la décision doit être prise avant l'écriture du dépôt de fichiers,
-car passer à du stockage objet remplace un chemin de fichier par un SDK.
+Ces limites viennent du cadre du projet — un service temporaire sur une VM — et
+non d'un oubli de conception. Le passage à un stockage partagé a été évalué et
+écarté ; l'interface `FileStorage` le garde réalisable en environ une heure si le
+besoin apparaissait.
 
 ### À implémenter
 

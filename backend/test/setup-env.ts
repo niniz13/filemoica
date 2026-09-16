@@ -28,3 +28,9 @@ process.env.STORAGE_PATH ??= './storage-test';
 process.env.ENCRYPTION_KEY_V1 ??= '1'.repeat(64);
 process.env.HMAC_INDEX_KEY ??= '2'.repeat(64);
 process.env.FRONTEND_ORIGIN ??= 'http://localhost:5173';
+
+// Quotas réduits : vérifier un dépassement suppose de l'atteindre, et
+// transférer 200 Mo dans une suite de tests coûterait des minutes pour prouver
+// exactement la même chose qu'un mégaoctet.
+process.env.FREE_PLAN_QUOTA_MB ??= '1';
+process.env.PREMIUM_PLAN_QUOTA_MB ??= '5';

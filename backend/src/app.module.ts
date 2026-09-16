@@ -3,8 +3,10 @@ import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from './auth/auth.module';
 import { validateEnv } from './config/env.validation';
 import { CryptoModule } from './crypto/crypto.module';
+import { FilesModule } from './files/files.module';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { StorageModule } from './storage/storage.module';
 
 @Module({
   imports: [
@@ -17,7 +19,9 @@ import { PrismaModule } from './prisma/prisma.module';
     }),
     PrismaModule,
     CryptoModule,
+    StorageModule,
     AuthModule,
+    FilesModule,
     HealthModule,
   ],
 })

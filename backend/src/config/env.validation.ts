@@ -91,6 +91,33 @@ export class EnvironmentVariables {
   STORAGE_PATH: string;
 
   /**
+   * Taille maximale d'un fichier déposé, en mégaoctets.
+   *
+   * Une borne est indispensable : sans elle, un seul dépôt peut remplir le
+   * disque et empêcher tous les suivants. La valeur doit rester cohérente avec
+   * l'espace alloué par l'infrastructure.
+   */
+  @IsInt()
+  @Min(1)
+  @Max(2048)
+  MAX_FILE_SIZE_MB: number = 200;
+
+  /**
+   * Volume mensuel de dépôt inclus dans l'offre gratuite, en mégaoctets.
+   *
+   * Dans la configuration : l'offre doit pouvoir être ajustée après un retour
+   * d'utilisateur sans qu'il faille modifier et redéployer le code.
+   */
+  @IsInt()
+  @Min(1)
+  FREE_PLAN_QUOTA_MB: number = 200;
+
+  /** Volume mensuel de l'offre payante, en mégaoctets. */
+  @IsInt()
+  @Min(1)
+  PREMIUM_PLAN_QUOTA_MB: number = 20_480;
+
+  /**
    * Clé maître (KEK) version 1. Elle ne chiffre jamais un fichier directement :
    * elle chiffre la clé propre à chaque fichier (DEK), ce qui rend la rotation
    * possible sans retoucher aux fichiers eux-mêmes.
