@@ -44,6 +44,8 @@ import { TokenService } from './token.service';
       useClass: JwtAuthGuard,
     },
   ],
-  exports: [TokenService],
+  // `PasswordService` sert aussi aux mots de passe des liens de partage : une
+  // seule implémentation du hachage, donc un seul endroit où se tromper.
+  exports: [TokenService, PasswordService],
 })
 export class AuthModule {}

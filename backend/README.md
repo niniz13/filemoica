@@ -1,7 +1,11 @@
 # filemoica — Backend
 
-API de partage de fichiers chiffrés. Un utilisateur dépose un fichier, crée un
-lien de partage nominatif à durée limitée, et peut le révoquer à tout moment.
+API de partage de fichiers chiffrés. Un utilisateur dépose un fichier et en tire
+un lien à durée limitée, éventuellement protégé par un mot de passe, qu'il peut
+révoquer à tout moment.
+
+**Déposer exige un compte ; recevoir non.** Le destinataire ouvre le lien et
+récupère le fichier, sans inscription.
 
 Ce document décrit **ce qui est réellement implémenté à ce jour** et les raisons
 de chaque choix. Ce qui reste à faire est listé en fin de page, séparément, pour
@@ -19,6 +23,7 @@ qu'on ne confonde jamais l'intention et le code qui tourne.
 - [Sécurité : ce qui est en place](#sécurité--ce-qui-est-en-place)
 - [Authentification](#authentification)
 - [Fichiers](#fichiers)
+- [Partages et téléchargement](#partages-et-téléchargement)
 - [Modèle de données](#modèle-de-données)
 - [Supervision et incident](#supervision-et-incident)
 - [Contrats avec le reste de l'équipe](#contrats-avec-le-reste-de-léquipe)
@@ -184,10 +189,14 @@ npx tsc --noEmit         # vérification de types
 | Authentification (inscription, connexion, sessions, révocation) | ✅ implémenté et testé |
 | Documentation OpenAPI (`/api/docs`) | ✅ implémenté et testé |
 | Dépôt, liste et suppression de fichiers | ✅ implémenté et testé |
-| Partages, révocation et téléchargement | ⬜ schéma en base, routes à écrire |
+| Quota mensuel et offres | ✅ implémenté et testé |
+| Partages, révocation et téléchargement | ✅ implémenté et testé |
 
-**177 tests au vert** (100 unitaires, 77 end-to-end), analyse statique et
+**211 tests au vert** (100 unitaires, 111 end-to-end), analyse statique et
 vérification de types sans erreur.
+
+**Le parcours utilisateur est complet** : déposer, partager, télécharger,
+révoquer. Le destinataire n'a pas besoin de compte.
 
 ---
 
@@ -578,6 +587,115 @@ parlerait que de taille.
 
 ---
 
+## Partages et téléchargement
+
+| Méthode | Route | Accès | Rôle |
+|---|---|---|---|
+| `POST` | `/api/shares` | **session** | Crée un lien |
+| `GET` | `/api/shares` | **session** | Liste ses partages avec leur état |
+| `PATCH` | `/api/shares/:id/revoke` | **session** | Coupe l'accès immédiatement |
+| `GET` | `/api/download/:token/info` | *public* | Décrit le lien sans le consommer |
+| `GET` | `/api/download/:token` | *public* | Télécharge le fichier |
+
+### Déposer exige un compte, recevoir non
+
+Le destinataire **n'a pas de compte et n'en a pas besoin**. Il clique sur le
+lien qu'on lui a transmis et récupère le fichier. Lui imposer une inscription
+reviendrait à exiger une démarche de sa part pour rendre service à quelqu'un
+d'autre.
+
+La conséquence est nette : **le jeton est le secret**. Trois choses le rendent
+acceptable, dont deux sont à la main du déposant :
+
+| Protection | Qui la décide |
+|---|---|
+| 32 octets aléatoires, hors de portée d'une attaque par essais | le service |
+| Une durée de vie, de 1 heure à 30 jours | le déposant |
+| Un mot de passe facultatif | le déposant |
+| La révocation, immédiate et à tout moment | le déposant |
+
+### Le mot de passe de lien
+
+Quand il est défini, le lien seul ne suffit plus. C'est ce qui protège un lien
+intercepté, transféré à la mauvaise personne ou publié par erreur.
+
+Il est haché en argon2id, comme un mot de passe de compte, et transmis par le
+destinataire dans l'en-tête **`X-Share-Password`** — jamais dans l'URL, où il
+finirait dans l'historique du navigateur et dans les journaux des serveurs
+traversés.
+
+Tant qu'il n'est pas franchi, `/info` ne révèle **ni le nom ni la taille** du
+fichier : quelqu'un qui intercepterait le lien apprendrait sinon ce qu'il
+contient sans jamais avoir à le déverrouiller.
+
+### Le jeton n'existe qu'une fois
+
+Il est renvoyé à la création, puis oublié : la base n'en conserve que
+l'empreinte SHA-256. Une fuite de la base ne livre donc **aucun lien
+utilisable**. Un jeton perdu n'est pas récupérable, il faut créer un nouveau
+partage.
+
+L'email du destinataire est facultatif et **purement informatif** : il sert à
+savoir à qui un partage était destiné, et servira à la notification. Il ne
+conditionne pas l'accès. Il est tout de même chiffré en base.
+
+### Les contrôles et leurs réponses
+
+| Contrôle | Réponse | Code |
+|---|---|---|
+| Le jeton correspond à un partage | `404` | `SHARE_NOT_FOUND` |
+| Le partage n'est pas révoqué | `403` | `SHARE_REVOKED` |
+| Le partage n'a pas expiré | `410` | `SHARE_EXPIRED` |
+| Le mot de passe est fourni, s'il en faut un | `401` | `SHARE_PASSWORD_REQUIRED` |
+| Le mot de passe est le bon | `403` | `SHARE_PASSWORD_INVALID` |
+
+La révocation est vérifiée **avant** l'expiration : c'est un geste délibéré du
+propriétaire, il doit primer sur une date atteinte entre-temps.
+
+Le `410` distingue « a expiré » de « n'a jamais existé », ce qui permet au front
+de proposer de demander un nouveau lien plutôt qu'un message d'erreur sec.
+
+Les mêmes refus s'appliquent à `/info` : un lien révoqué est refusé partout de
+la même façon.
+
+### Le durcissement du téléchargement
+
+C'est **la** protection réelle contre un fichier malveillant, bien plus que la
+liste des formats acceptés :
+
+| En-tête | Effet |
+|---|---|
+| `Content-Disposition: attachment` | Force l'enregistrement, jamais l'affichage |
+| `Content-Type: application/octet-stream` | Prive le navigateur de raison d'interpréter |
+| `X-Content-Type-Options: nosniff` | L'empêche de deviner le type malgré tout |
+
+Sans ces en-têtes, un document HTML ou une image vectorielle téléchargés depuis
+notre domaine s'exécuteraient **dans notre origine** — ce qui contournerait
+précisément la défense CSRF assurée par `SameSite=Strict`.
+
+Deux en-têtes s'ajoutent pour protéger le lien lui-même, puisqu'il est le seul
+secret : `Referrer-Policy: no-referrer` l'empêche de partir vers un site tiers,
+et `Cache-Control: no-store` évite qu'un relais conserve le fichier déchiffré.
+
+Le nom d'origine est préservé sous deux formes, dont une encodée pour les
+accents ; les guillemets en sont retirés, faute de quoi un nom de fichier
+pourrait injecter des directives dans l'en-tête.
+
+### Déchiffrement à la volée
+
+Le contenu est déchiffré en flux vers le destinataire : il n'existe en clair **à
+aucun moment** sur le disque du serveur.
+
+> **Une conséquence à connaître.** L'intégrité GCM ne se vérifie qu'à la fin du
+> flux, donc après l'envoi des en-têtes : un fichier altéré sur le disque ne
+> peut plus donner lieu à un code d'erreur propre. La connexion est alors
+> coupée, ce qui donne au destinataire un téléchargement manifestement
+> interrompu plutôt qu'un fichier corrompu qu'il croirait valide. C'est le prix
+> du flux ; l'alternative serait de lire le fichier entier avant d'en envoyer le
+> premier octet.
+
+---
+
 ## Modèle de données
 
 Cinq tables, identifiants UUID, migration `20260915145703_init`.
@@ -766,6 +884,13 @@ Les tests les plus significatifs pour l'évaluation :
 | Un utilisateur ne voit pas les fichiers d'un autre | `files.e2e-spec.ts` |
 | Le fichier d'autrui renvoie 404, pas 403 | `files.e2e-spec.ts` |
 | Un exécutable déguisé en PDF est refusé | `files.e2e-spec.ts` |
+| Le quota gratuit bloque réellement le dépôt | `files.e2e-spec.ts` |
+| Un destinataire sans compte récupère bien le fichier | `shares.e2e-spec.ts` |
+| Une révocation coupe l'accès immédiatement | `shares.e2e-spec.ts` |
+| Un lien protégé refuse le téléchargement sans mot de passe | `shares.e2e-spec.ts` |
+| Un lien protégé ne révèle pas ce qu'il contient | `shares.e2e-spec.ts` |
+| Un lien expiré répond 410, pas 404 | `shares.e2e-spec.ts` |
+| La base ne contient aucun jeton de partage en clair | `shares.e2e-spec.ts` |
 
 ---
 
@@ -795,8 +920,7 @@ besoin apparaissait.
 
 | Lot | Contenu |
 |---|---|
-| Fichiers | Dépôt chiffré en flux, liste limitée au propriétaire |
-| Partages | Création de liens, révocation, téléchargement avec les quatre contrôles d'accès |
-| Rotation | Script de re-chiffrement des données existantes |
+| Rotation | Script de re-chiffrement des données existantes avec une nouvelle clé |
 | Journalisation | Logs structurés pour la centralisation |
-| Documentation d'API | Swagger et collection de requêtes pour le front |
+| Purge | Commande de nettoyage des jetons expirés, pour le cron de SRC |
+| Limitation de débit | Ralentir les tentatives répétées sur la connexion |
