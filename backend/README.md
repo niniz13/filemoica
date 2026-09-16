@@ -11,10 +11,13 @@ qu'on ne confonde jamais l'intention et le code qui tourne.
 
 ## Sommaire
 
-- [Démarrage rapide](#démarrage-rapide)
+- [Lancer le projet](#lancer-le-projet)
+  - [Documentation de l'API (Swagger)](#documentation-de-lapi-swagger)
+  - [Lancer les tests](#lancer-les-tests)
 - [État d'avancement](#état-davancement)
 - [Choix techniques](#choix-techniques)
 - [Sécurité : ce qui est en place](#sécurité--ce-qui-est-en-place)
+- [Authentification](#authentification)
 - [Modèle de données](#modèle-de-données)
 - [Supervision et incident](#supervision-et-incident)
 - [Contrats avec le reste de l'équipe](#contrats-avec-le-reste-de-léquipe)
@@ -24,42 +27,148 @@ qu'on ne confonde jamais l'intention et le code qui tourne.
 
 ---
 
-## Démarrage rapide
+## Lancer le projet
 
-**Prérequis :** Node.js **≥ 24.9** et Docker.
+### 1. Prérequis
+
+| Outil | Version | Pourquoi cette contrainte |
+|---|---|---|
+| Node.js | **≥ 24.9** | NestJS 12 est distribué en ESM, et les tests ne s'exécutent pas sur une version antérieure. Vérifier avec `node -v` |
+| Docker | récent | Fait tourner PostgreSQL, rien à installer sur le poste |
+
+### 2. Installation
 
 ```bash
-cp .env.example .env     # puis renseigner les valeurs (voir plus bas)
-npm install              # génère aussi le client Prisma
-npm run db:up            # démarre PostgreSQL
-npm run db:migrate       # applique les migrations
-npm run start:dev
+npm install
 ```
 
-Générer une clé de 32 octets pour `.env` :
+Cette commande génère aussi le client Prisma — inutile de le faire à la main.
+
+### 3. Configuration
+
+```bash
+cp .env.example .env
+```
+
+Puis renseigner dans `.env` les trois secrets laissés vides. Chacun doit faire
+**64 caractères hexadécimaux** (32 octets) ; générer une valeur avec :
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Le service écoute sur le port 3000. Vérification :
+| Variable | Rôle |
+|---|---|
+| `JWT_SECRET` | Signature des jetons de session |
+| `ENCRYPTION_KEY_V1` | Clé maître du chiffrement au repos |
+| `HMAC_INDEX_KEY` | Index aveugle des emails de destinataires |
+
+Le service **refuse de démarrer** si une variable manque ou est mal formée, et
+affiche alors la liste complète des problèmes. Ce n'est pas une panne : c'est
+volontaire, pour qu'une clé absente ne passe jamais inaperçue.
+
+`.env` est ignoré par git. Aucun secret réel ne doit y être versionné.
+
+### 4. Base de données
+
+```bash
+npm run db:up        # démarre PostgreSQL dans Docker
+npm run db:migrate   # crée les tables
+```
+
+> **Port 5433, pas 5432.** Un PostgreSQL est déjà installé sur le poste de
+> développement et occupe le port standard. Le conteneur, lui, écoute bien sur
+> 5432 en interne — l'écart ne concerne que la machine locale.
+
+### 5. Démarrer le service
+
+```bash
+npm run start:dev    # développement, avec rechargement automatique
+```
+
+En production, l'application se lance depuis les fichiers compilés :
+
+```bash
+npm run build
+npm run start:prod
+```
+
+Le service écoute sur le port **3000**. Vérifier qu'il répond :
 
 ```bash
 curl http://localhost:3000/health
+# {"status":"ok","version":"dev","checks":{"database":"up"},...}
 ```
 
-### Commandes utiles
+---
+
+### Documentation de l'API (Swagger)
+
+Une fois le service démarré :
+
+| Adresse | Contenu |
+|---|---|
+| **<http://localhost:3000/api/docs>** | Documentation interactive : routes, schémas, codes d'erreur, et essai direct depuis la page |
+| <http://localhost:3000/api/docs-json> | Spécification OpenAPI brute |
+
+**Pour Postman ou Insomnia :** importer directement l'URL `/api/docs-json`
+(*Import → Link*). La collection se régénère à chaque évolution de l'API, il n'y
+a donc rien à maintenir à la main.
+
+**Essayer une route protégée depuis la page :** appeler d'abord `/auth/login`
+avec un compte existant, puis enchaîner sur les autres routes. Les cookies de
+session sont `httpOnly` — l'interface ne peut pas les poser elle-même, mais le
+navigateur les joint automatiquement une fois la connexion faite.
+
+La documentation peut être coupée via `ENABLE_API_DOCS=false`, sans toucher au
+code.
+
+---
+
+### Lancer les tests
+
+**Tests unitaires** — aucune dépendance, ni base ni Docker :
+
+```bash
+npm test
+```
+
+**Tests de bout en bout** — les tests d'authentification tournent contre une
+vraie base PostgreSQL. Il faut donc la démarrer et la préparer une fois :
+
+```bash
+npm run db:up            # si ce n'est pas déjà fait
+npm run db:migrate:test  # prépare la base de test, distincte de celle de développement
+npm run test:e2e
+```
+
+> Si les tests e2e échouent sur des tables absentes, c'est que
+> `npm run db:migrate:test` n'a pas été rejoué après une migration.
+
+**Autres vérifications :**
+
+```bash
+npm run lint             # analyse statique
+npx tsc --noEmit         # vérification de types
+```
+
+### Toutes les commandes
 
 | Commande | Rôle |
 |---|---|
 | `npm run start:dev` | Démarrage avec rechargement automatique |
+| `npm run start:prod` | Démarrage depuis `dist/` (production) |
+| `npm run build` | Compilation |
 | `npm test` | Tests unitaires |
-| `npm run test:e2e` | Tests de bout en bout |
+| `npm run test:e2e` | Tests de bout en bout (nécessite la base) |
+| `npm run test:cov` | Tests unitaires avec couverture |
 | `npm run lint` | Analyse statique |
 | `npm run db:up` / `db:down` | Démarre / arrête PostgreSQL |
 | `npm run db:reset` | Repart d'une base vierge (**supprime les données**) |
 | `npm run db:migrate` | Crée et applique une migration |
+| `npm run db:migrate:test` | Applique les migrations sur la base de test |
 | `npm run db:deploy` | Applique les migrations sans en créer (production) |
+| `npm run db:studio` | Interface de consultation de la base |
 
 ---
 
@@ -71,11 +180,12 @@ curl http://localhost:3000/health
 | Base de données et migrations | ✅ implémenté et testé |
 | Supervision `/health` | ✅ implémenté et testé |
 | Chiffrement (enveloppe, index aveugle, jetons) | ✅ implémenté et testé |
-| Authentification (inscription, connexion, sessions) | ⬜ schéma en base, endpoints à écrire |
+| Authentification (inscription, connexion, sessions, révocation) | ✅ implémenté et testé |
+| Documentation OpenAPI (`/api/docs`) | ✅ implémenté et testé |
 | Dépôt et téléchargement de fichiers | ⬜ schéma en base, endpoints à écrire |
 | Partages et révocation | ⬜ schéma en base, endpoints à écrire |
 
-**88 tests au vert** (75 unitaires, 13 end-to-end), analyse statique et
+**142 tests au vert** (100 unitaires, 42 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 ---
@@ -135,6 +245,21 @@ Le filtre assure aussi l'étanchéité : une exception imprévue (erreur Prisma,
 est journalisée côté serveur avec sa trace complète, mais renvoyée au client en
 **500 anonyme**. Ni requête SQL, ni chemin serveur, ni nom de table ne franchit
 la frontière.
+
+### Documentation générée depuis le code
+
+La documentation OpenAPI n'est pas écrite à part : elle est **déduite du code**.
+Le plugin `@nestjs/swagger` déclaré dans `nest-cli.json` lit les types
+TypeScript, les décorateurs `class-validator` et les commentaires de
+documentation à la compilation.
+
+Concrètement, une contrainte écrite une seule fois — « le mot de passe fait au
+moins 12 caractères » — sert à la fois à valider les requêtes et à documenter
+l'API. Il n'y a rien à resynchroniser quand la règle change.
+
+Les seules annotations manuelles portent sur les **réponses d'erreur** : aucun
+outil ne peut deviner qu'une route renvoie `EMAIL_ALREADY_USED` en 409. Ce sont
+justement les informations dont le front a le plus besoin.
 
 ### Tests configurés comme la production
 
@@ -238,6 +363,100 @@ les données *en transit*, le backend les protège *au repos*.
 
 ---
 
+## Authentification
+
+### Routes
+
+| Méthode | Route | Accès | Rôle |
+|---|---|---|---|
+| `POST` | `/api/auth/register` | public | Crée un compte |
+| `POST` | `/api/auth/login` | public | Ouvre une session, pose les cookies |
+| `POST` | `/api/auth/refresh` | cookie de rafraîchissement | Renouvelle la session |
+| `POST` | `/api/auth/logout` | public | Ferme la session et révoque les jetons |
+| `GET` | `/api/auth/me` | **session requise** | Compte courant |
+
+**Aucun jeton n'apparaît dans les corps de réponse.** Ils partent uniquement
+dans des cookies `httpOnly` : le front n'a rien à stocker, et le JavaScript de
+la page ne peut pas lire la session.
+
+### Deux jetons, deux rôles
+
+- **Access token** — un JWT de 15 minutes, présenté à chaque requête. Autoportant,
+  donc validé sans consulter la base.
+- **Refresh token** — une valeur **opaque** de 32 octets, valable 7 jours, dont le
+  seul rôle est d'obtenir un nouvel access token.
+
+Pourquoi le second n'est-il pas un JWT ? Parce qu'un JWT ne peut pas être
+révoqué : il reste valide jusqu'à expiration. Le refresh token, lui, est une
+ligne en base — le révoquer est immédiat. La durée courte de l'access token borne
+la fenêtre pendant laquelle un vol reste exploitable.
+
+Son cookie est restreint au chemin `/api/auth` : le navigateur ne l'envoie jamais
+sur les routes de fichiers ou de partage. Un jeton qui ne circule pas est un
+jeton qu'on ne peut pas intercepter au passage.
+
+### Détection de vol de session
+
+Chaque utilisation d'un refresh token le consomme et en émet un nouveau. Tous les
+jetons issus d'une même connexion partagent une lignée (`family_id`).
+
+Si un jeton **déjà consommé** est présenté, il n'y a que deux explications : il a
+été volé et l'attaquant le rejoue, ou il a été volé et c'est la victime qui le
+rejoue. Dans les deux cas, quelqu'un d'autre en détient une copie — la **lignée
+entière** est donc révoquée.
+
+La victime est déconnectée elle aussi. C'est un choix assumé : mieux vaut une
+reconnexion contrariante qu'un attaquant qui garde un accès silencieux.
+
+### Révocation immédiate à la déconnexion
+
+Se déconnecter fait deux choses : révoquer le refresh token et sa lignée en base,
+et inscrire l'identifiant (`jti`) de l'access token sur une liste de refus,
+consultée à chaque requête.
+
+Sans cette seconde action, un jeton volé resterait valable **jusqu'à 15 minutes
+après** la déconnexion. La liste ne contient jamais que quelques minutes de
+déconnexions, et une purge suffit à la vider.
+
+### Mots de passe
+
+argon2id, avec les paramètres recommandés par l'OWASP (19 Mio de mémoire,
+2 passes). Le coût mémoire est le paramètre décisif : il neutralise l'avantage
+des cartes graphiques, là où un attaquant testerait des millions de mots de passe
+par seconde contre du SHA-256.
+
+**Un seul critère à l'inscription : 12 caractères minimum.** Les règles de
+composition (« une majuscule, un chiffre, un caractère spécial ») poussent en
+pratique vers des mots de passe courts et prévisibles du type `Password1!`,
+quand une phrase longue résiste bien mieux. C'est la recommandation actuelle de
+l'ANSSI et du NIST.
+
+### Contre l'énumération des comptes
+
+Deux précautions rendent impossible de découvrir quels emails ont un compte :
+
+- le message d'erreur est **identique** pour un email inconnu et pour un mot de
+  passe faux ;
+- une vérification **factice** est exécutée quand l'email n'existe pas. Sans
+  elle, la réponse serait immédiate dans ce cas et prendrait plusieurs dizaines
+  de millisecondes dans l'autre : ce seul écart de temps suffirait à énumérer les
+  comptes, sans jamais connaître un mot de passe.
+
+L'inscription, elle, révèle qu'un email est déjà pris. C'est un compromis
+assumé : l'alternative — accepter silencieusement — rendrait l'inscription
+incompréhensible pour quelqu'un qui a simplement oublié qu'il avait un compte.
+
+### Routes fermées par défaut
+
+Le garde de session est **global**. Une route est protégée tant qu'elle n'est pas
+explicitement ouverte par `@Public()`.
+
+C'est l'inverse de la configuration habituelle, et c'est voulu : un oubli produit
+une route **inaccessible**, qu'on remarque au premier essai, plutôt qu'une route
+ouverte à tous, qu'on ne remarque jamais.
+
+---
+
 ## Modèle de données
 
 Cinq tables, identifiants UUID, migration `20260915145703_init`.
@@ -315,8 +534,16 @@ le tableau de tests.
 | Secrets à fournir | `JWT_SECRET`, `ENCRYPTION_KEY_V1`, `HMAC_INDEX_KEY`, `DATABASE_URL` |
 | Sauvegarde | **Deux artefacts indissociables** : `pg_dump` (les clés chiffrées) **et** le contenu de `STORAGE_PATH` (les fichiers chiffrés). Restaurer l'un sans l'autre ne donne rien d'exploitable |
 | Purge | Les jetons expirés sont à purger périodiquement (script à venir) |
+| `ENABLE_API_DOCS` | Expose `/api/docs`. À `true` par défaut ; peut être coupé en production pour réduire ce qu'un attaquant apprend de la surface de l'API |
 
 ### Pour le front (IW 1)
+
+**Documentation interactive : <http://localhost:3000/api/docs>** — routes,
+schémas de requête et de réponse, codes d'erreur, et essai direct depuis la page.
+
+La spécification OpenAPI brute est sur `/api/docs-json` : Postman et Insomnia
+l'importent directement depuis cette URL, ce qui évite de maintenir une
+collection à la main.
 
 Deux lignes à placer dans le wrapper `fetch`, faute de quoi rien ne fonctionnera :
 
@@ -375,21 +602,35 @@ l'écart ne concerne que la machine de développement.
 
 ## Tests
 
-```bash
-npm test          # 75 tests unitaires
-npm run test:e2e  # 13 tests de bout en bout
-```
+Les commandes sont dans [Lancer les tests](#lancer-les-tests). Cette section
+explique **ce qui est testé et pourquoi**.
 
-Les tests end-to-end n'ont besoin d'aucune base : `PrismaService` est remplacé
-par un double. C'est un choix délibéré — il permet de simuler une base tombée, ce
-qu'on ne peut pas faire de façon fiable en arrêtant un vrai serveur au milieu
-d'une suite. La panne réelle, elle, est vérifiée à la main (voir
-[Incident](#incident-vérifié-le-1509)).
+Le principe retenu : couvrir ce qui porte une garantie de sécurité ou une règle
+métier, pas chaque fichier. Un test qui ne ferait que redire ce que le code écrit
+déjà coûte du temps à écrire, du temps à lire, et se contente de figer
+l'implémentation.
+
+**Deux stratégies selon ce qui est prouvé.** Les tests de socle et de supervision
+remplacent `PrismaService` par un double : c'est ce qui permet de simuler une
+base tombée, impossible à faire de façon fiable en arrêtant un vrai serveur au
+milieu d'une suite.
+
+Les tests d'authentification, eux, tournent contre une **vraie base**
+(`filemoica_test`, distincte de celle de développement). C'est le seul moyen de
+prouver que les contraintes d'unicité, les suppressions en cascade et la
+révocation de session se comportent réellement comme annoncé — et ce sont
+justement ces garanties qui sont évaluées.
 
 Les tests les plus significatifs pour l'évaluation :
 
 | Ce qui est démontré | Emplacement |
 |---|---|
+| Une personne non authentifiée n'accède pas à une ressource protégée | `auth.e2e-spec.ts` |
+| Une session révoquée cesse immédiatement de fonctionner | `auth.e2e-spec.ts` |
+| Un refresh token rejoué coupe toute la lignée | `auth.e2e-spec.ts` |
+| Le refresh token n'est jamais stocké en clair | `auth.e2e-spec.ts` |
+| Email inconnu et mot de passe faux donnent la même réponse | `auth.e2e-spec.ts` |
+| Une tentative d'élévation (`role: ADMIN`) est refusée | `auth.e2e-spec.ts` |
 | Un fichier altéré sur le disque n'est pas servi | `crypto.service.spec.ts` |
 | Deux fichiers de même nom n'ont pas le même chiffré | `crypto.service.spec.ts` |
 | Une fuite de la base ne livre aucun lien de partage | `crypto.service.spec.ts` |
@@ -426,7 +667,6 @@ car passer à du stockage objet remplace un chemin de fichier par un SDK.
 
 | Lot | Contenu |
 |---|---|
-| Authentification | Inscription (argon2id), connexion, cookies, garde de session, rotation du refresh token, révocation |
 | Fichiers | Dépôt chiffré en flux, liste limitée au propriétaire |
 | Partages | Création de liens, révocation, téléchargement avec les quatre contrôles d'accès |
 | Rotation | Script de re-chiffrement des données existantes |
