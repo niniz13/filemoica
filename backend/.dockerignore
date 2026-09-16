@@ -1,0 +1,34 @@
+# Contexte de construction — fonctionne en liste blanche.
+#
+# Tout est exclu par défaut, puis on réintègre explicitement ce que la
+# construction exige. Une liste noire obligerait à penser à chaque nouveau
+# fichier sensible ; ici, un secret ajouté demain reste dehors sans que
+# personne ait à y penser.
+#
+# Ce qui ne doit **jamais** entrer dans une image :
+#   - `.env`      il contient ENCRYPTION_KEY_V1, donc les fichiers de tous les
+#                 utilisateurs. Une image se pousse sur un registre et se
+#                 partage ; ses couches restent lisibles même après un
+#                 `docker rmi`.
+#   - `storage/`  les fichiers déposés par les utilisateurs.
+#   - `.git`      tout l'historique, donc tout secret qui y aurait transité.
+*
+
+# --- Ce dont la construction a besoin --------------------------------------
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.build.json
+!nest-cli.json
+!prisma7.config.ts
+!prisma
+!src
+
+# --- Ré-exclusions à l'intérieur de ce qui précède -------------------------
+
+# Le client Prisma est régénéré dans l'image : celui du poste a été produit
+# pour Windows.
+src/generated
+
+# Les tests ne servent pas à l'exécution.
+**/*.spec.ts

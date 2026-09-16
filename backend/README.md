@@ -174,7 +174,12 @@ npx tsc --noEmit         # vérification de types
 | `npm run db:studio` | Interface de consultation de la base |
 | `npm run keys:rotate` | Bascule les données vers la nouvelle clé maître (`-- --dry-run` pour simuler) |
 | `npm run tokens:purge` | Supprime les jetons expirés |
+| `npm run files:purge` | Efface les fichiers dont la conservation est écoulée (`-- --dry-run` pour simuler) |
 | `npm run seed` | Crée les comptes de démonstration |
+| `npm run docker:up` | Lance la pile conteneurisée : base, migrations, application |
+| `npm run docker:down` | Arrête la pile conteneurisée |
+| `npm run docker:logs` | Suit les journaux de l'application conteneurisée |
+| `npm run docker:verify` | Joue un parcours complet contre un service en ligne (`-- <url>`) |
 
 ---
 
@@ -194,8 +199,10 @@ npx tsc --noEmit         # vérification de types
 | Rotation des clés de chiffrement | ✅ implémenté et testé |
 | Journaux, limitation de tentatives, purge | ✅ implémenté et testé |
 | Rôles et administration des comptes | ✅ implémenté et testé |
+| Conservation et purge automatique des fichiers | ✅ implémenté et testé |
+| Conteneurisation (image non-root, durcie) | ✅ construite, lancée et auditée |
 
-**282 tests au vert** (128 unitaires, 154 end-to-end), analyse statique et
+**291 tests au vert** (128 unitaires, 163 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 **Le parcours utilisateur est complet** : déposer, partager, télécharger,
@@ -362,7 +369,8 @@ le tableau de tests.
 | Sonde | `GET /health` — 200 sain, 503 dégradé |
 | Secrets à fournir | `JWT_SECRET`, `ENCRYPTION_KEY_V1`, `HMAC_INDEX_KEY`, `DATABASE_URL` |
 | Sauvegarde | **Deux artefacts indissociables** : `pg_dump` (les clés chiffrées) **et** le contenu de `STORAGE_PATH` (les fichiers chiffrés). Restaurer l'un sans l'autre ne donne rien d'exploitable |
-| Purge | `npm run tokens:purge` à planifier une fois par jour |
+| Purges | **Deux tâches quotidiennes** : `npm run tokens:purge` (sans risque) et `npm run files:purge` (efface de la donnée utilisateur — simuler avec `-- --dry-run` avant la première exécution) |
+| Conservation | 30 jours en offre gratuite, 90 en payante, comptés depuis la fin du dernier partage. Réglables par `FREE_PLAN_RETENTION_DAYS` / `PREMIUM_PLAN_RETENTION_DAYS` |
 | **`TRUST_PROXY_HOPS`** | **À régler** selon le nombre de relais devant le service. Sans cela, la limitation de tentatives bloque tout le monde d'un coup |
 | Journaux | JSON, une ligne par requête, sur la sortie standard |
 | `ENABLE_API_DOCS` | Expose `/api/docs`. À `true` par défaut ; peut être coupé en production pour réduire ce qu'un attaquant apprend de la surface de l'API |
@@ -521,5 +529,5 @@ besoin apparaissait.
 | Lot | Contenu |
 |---|---|
 | Sauvegarde et restauration | À jouer et chronométrer avec SRC — procédure déjà écrite dans [le document de décision](../docs/decision-stockage-fichiers.md) |
-| Conteneurisation | Dockerfile de l'application — **à répartir avec SRC** |
-| Rétention des fichiers | Aucun nettoyage automatique des fichiers dont tous les partages ont expiré. Politique à décider ensemble |
+| Déploiement | L'image est prête et vérifiée ; **il reste à SRC de la déployer** |
+| Planification de la purge | Le code et la commande existent ; il reste à poser les deux lignes de `cron` sur la VM — **côté SRC** |

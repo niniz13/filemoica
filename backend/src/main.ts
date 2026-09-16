@@ -26,6 +26,13 @@ async function bootstrap(): Promise<void> {
 
   configureApp(app);
 
+  // `docker stop` envoie SIGTERM. Sans ces crochets, Nest n'entreprend aucun
+  // arrêt ordonné : `PrismaService.onModuleDestroy()` ne serait jamais appelé,
+  // le pool PostgreSQL resterait ouvert côté serveur, et une requête en cours
+  // serait tranchée net — sur un dépôt, cela laisse un fichier partiellement
+  // écrit sur le disque. Sans effet hors conteneur, indispensable dedans.
+  app.enableShutdownHooks();
+
   const config = app.get(ConfigService<EnvironmentVariables, true>);
   const port = config.get('PORT', { infer: true });
 

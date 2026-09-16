@@ -48,11 +48,14 @@ lerna-debug.log*
 !.vscode/extensions.json
 
 # dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
+#
+# Motif large plutôt que liste nominative : tout fichier `.env*` est exclu, et
+# seuls les modèles sans secret sont réintégrés. Un `.env.deploy` créé demain
+# reste dehors sans que personne ait à modifier ce fichier — c'est celui qui
+# contiendrait ENCRYPTION_KEY_V1, donc les fichiers de tous les utilisateurs.
+.env*
+!.env.example
+!.env.deploy.example
 
 # temp directory
 .temp
