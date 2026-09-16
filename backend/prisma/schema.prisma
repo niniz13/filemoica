@@ -69,6 +69,7 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
 
   files         File[]
+  shares        Share[]
   refreshTokens RefreshToken[]
   monthlyUsage  MonthlyUsage[]
 
@@ -170,14 +171,37 @@ model Share {
   /// facteur qui protège un lien intercepté, transféré ou publié par erreur.
   passwordHash String? @map("password_hash")
 
+  /// Lien à usage unique : il se consume au premier téléchargement réussi.
+  ///
+  /// Quand le fichier n'a plus aucun autre lien exploitable, il est alors
+  /// **effacé du serveur**. C'est la garantie la plus forte que le service
+  /// puisse offrir : la donnée ne survit pas à sa transmission.
+  burnAfterDownload Boolean @default(false) @map("burn_after_download")
+
+  /// Date du téléchargement qui a consumé le lien. Nulle tant qu'il est vierge.
+  ///
+  /// Sert aussi de verrou : une mise à jour conditionnée à sa nullité garantit
+  /// qu'un seul téléchargement simultané l'emporte.
+  consumedAt DateTime? @map("consumed_at")
+
   /// Révocation manuelle, indépendante de l'expiration.
   revoked   Boolean   @default(false)
   revokedAt DateTime? @map("revoked_at")
 
   createdAt DateTime @default(now()) @map("created_at")
 
+  /// Créateur du lien.
+  ///
+  /// Redondant avec le propriétaire des fichiers couverts, et c'est voulu : un
+  /// lien à usage unique survit à l'effacement de ses fichiers, et sans cette
+  /// colonne il disparaîtrait de la liste de son créateur au moment précis où
+  /// celui-ci veut vérifier que le transfert a bien eu lieu.
+  ownerId String @map("owner_id") @db.Uuid
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
   files ShareFile[]
 
+  @@index([ownerId])
   @@index([recipientEmailHmac])
   @@map("shares")
 }
@@ -190,6 +214,14 @@ model Share {
 model ShareFile {
   shareId String @map("share_id") @db.Uuid
   fileId  String @map("file_id") @db.Uuid
+
+  /// Date à laquelle ce fichier a été téléchargé via ce lien.
+  ///
+  /// N'a de sens que sur un lien à usage unique, où elle sert de verrou : une
+  /// mise à jour conditionnée à sa nullité garantit qu'un seul téléchargement
+  /// simultané l'emporte. Le lien n'est consommé qu'une fois **tous** ses
+  /// fichiers marqués.
+  downloadedAt DateTime? @map("downloaded_at")
 
   share Share @relation(fields: [shareId], references: [id], onDelete: Cascade)
   file  File  @relation(fields: [fileId], references: [id], onDelete: Cascade)

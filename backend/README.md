@@ -24,6 +24,7 @@ qu'on ne confonde jamais l'intention et le code qui tourne.
 - [Authentification](#authentification)
 - [Fichiers](#fichiers)
 - [Partages et téléchargement](#partages-et-téléchargement)
+- [Exploitation](#exploitation)
 - [Modèle de données](#modèle-de-données)
 - [Supervision et incident](#supervision-et-incident)
 - [Contrats avec le reste de l'équipe](#contrats-avec-le-reste-de-léquipe)
@@ -175,6 +176,8 @@ npx tsc --noEmit         # vérification de types
 | `npm run db:migrate:test` | Applique les migrations sur la base de test |
 | `npm run db:deploy` | Applique les migrations sans en créer (production) |
 | `npm run db:studio` | Interface de consultation de la base |
+| `npm run keys:rotate` | Bascule les données vers la nouvelle clé maître (`-- --dry-run` pour simuler) |
+| `npm run tokens:purge` | Supprime les jetons expirés |
 
 ---
 
@@ -191,8 +194,10 @@ npx tsc --noEmit         # vérification de types
 | Dépôt, liste et suppression de fichiers | ✅ implémenté et testé |
 | Quota mensuel et offres | ✅ implémenté et testé |
 | Partages, révocation et téléchargement | ✅ implémenté et testé |
+| Rotation des clés de chiffrement | ✅ implémenté et testé |
+| Journaux, limitation de tentatives, purge | ✅ implémenté et testé |
 
-**211 tests au vert** (100 unitaires, 111 end-to-end), analyse statique et
+**265 tests au vert** (128 unitaires, 137 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 **Le parcours utilisateur est complet** : déposer, partager, télécharger,
@@ -300,10 +305,45 @@ de relire et re-chiffrer tous les fichiers. Ici on ne re-chiffre que les DEK,
 quelques dizaines d'octets chacune : les fichiers ne sont pas touchés. C'est le
 modèle employé par AWS KMS et Google Cloud KMS.
 
-La bascule est déjà fonctionnelle : ajouter `ENCRYPTION_KEY_V2` à la
+La version de clé voyage avec chaque donnée : ajouter `ENCRYPTION_KEY_V2` à la
 configuration suffit à chiffrer les nouvelles données en v2 tout en continuant à
-lire celles en v1, **sans changement de code**. La version de clé voyage avec
-chaque donnée.
+lire celles en v1, **sans changement de code**.
+
+### Faire tourner les clés
+
+```bash
+# 1. Générer la nouvelle clé
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# 2. L'ajouter en ENCRYPTION_KEY_V2, SANS retirer ENCRYPTION_KEY_V1
+
+# 3. Simuler
+npm run keys:rotate -- --dry-run
+
+# 4. Exécuter
+npm run keys:rotate
+
+# 5. Rapport à zéro reste → retirer ENCRYPTION_KEY_V1
+```
+
+**Mesuré sur la base de développement : 4 fichiers et 1 partage re-scellés en
+101 ms, et les fichiers sur le disque rigoureusement inchangés** (empreinte
+SHA-256 identique avant et après).
+
+C'est tout l'intérêt du chiffrement enveloppe : la rotation réécrit la clé de
+chaque fichier — quelques dizaines d'octets — et jamais les fichiers eux-mêmes.
+Sur un volume réel, c'est la différence entre quelques secondes et plusieurs
+heures d'indisponibilité.
+
+Trois propriétés rendent l'opération sûre :
+
+- **Idempotente** — une donnée déjà sur la clé cible est ignorée ; relancer ne
+  fait rien de plus.
+- **Reprenable** — chaque enregistrement est écrit indépendamment. Une
+  interruption laisse un mélange d'anciennes et de nouvelles versions, que la
+  prochaine exécution achève et que le service sait lire entre-temps.
+- **Sans interruption de service** — l'application peut continuer de tourner
+  pendant la bascule.
 
 ### AES-256-GCM, et pourquoi pas CBC
 
@@ -594,8 +634,19 @@ parlerait que de taille.
 | `POST` | `/api/shares` | **session** | Crée un lien |
 | `GET` | `/api/shares` | **session** | Liste ses partages avec leur état |
 | `PATCH` | `/api/shares/:id/revoke` | **session** | Coupe l'accès immédiatement |
-| `GET` | `/api/download/:token/info` | *public* | Décrit le lien sans le consommer |
-| `GET` | `/api/download/:token` | *public* | Télécharge le fichier |
+| `GET` | `/api/download/:token/info` | *public* | Liste les fichiers du lien, sans le consommer |
+| `GET` | `/api/download/:token/file/:fileId` | *public* | Télécharge un fichier du lien |
+
+### Un lien couvre une session de dépôt entière
+
+Un partage porte sur **un ou plusieurs fichiers**, jusqu'à 50. Qui envoie trois
+documents transmet **un seul lien**, pas trois — c'est l'usage attendu d'un
+service de transfert, et cela évite au destinataire de jongler entre des adresses.
+
+Le destinataire ouvre le lien, voit la liste, et récupère les fichiers un par
+un. Il n'y a pas d'archive assemblée côté serveur : elle obligerait à déchiffrer
+et recompresser l'ensemble avant le premier octet envoyé, là où le
+téléchargement fichier par fichier reste en flux continu.
 
 ### Déposer exige un compte, recevoir non
 
@@ -612,7 +663,54 @@ acceptable, dont deux sont à la main du déposant :
 | 32 octets aléatoires, hors de portée d'une attaque par essais | le service |
 | Une durée de vie, de 1 heure à 30 jours | le déposant |
 | Un mot de passe facultatif | le déposant |
+| Un usage unique, avec effacement des fichiers | le déposant |
 | La révocation, immédiate et à tout moment | le déposant |
+
+### Le lien à usage unique
+
+Option `burnAfterDownload` à la création. Le lien se consume une fois que
+**tous** ses fichiers ont été téléchargés, et ceux-ci sont alors **effacés du
+serveur** — base et disque — s'il ne leur reste aucun autre lien exploitable.
+
+C'est la garantie la plus forte que le service puisse offrir : *la donnée ne
+survit pas à sa transmission*.
+
+**Par défaut un lien reste réutilisable** jusqu'à son expiration ou sa
+révocation : le destinataire peut avoir raté son téléchargement, ou le même lien
+servir à plusieurs personnes. L'usage unique est donc une option, jamais le
+comportement implicite.
+
+Cinq points de conception qui font la différence entre une version correcte et
+une version naïve :
+
+**Le lien se consume au dernier fichier, pas au premier.** Un lien couvrant trois
+documents et mourant au premier téléchargement serait un piège : le destinataire
+n'en récupérerait qu'un. Chaque fichier est marqué à son passage, et le lien
+n'est consommé qu'une fois la liste épuisée.
+
+**Chaque fichier est réservé avant son envoi.** Deux personnes qui ouvrent le
+même fichier en même temps ne doivent pas repartir toutes les deux avec. La
+réservation est une mise à jour conditionnée à la nullité de la date de
+téléchargement : la base ne laisse passer qu'un seul gagnant. Un test lance deux
+téléchargements simultanés et vérifie qu'il y a exactement un `200` et un `410`.
+
+**Un transfert interrompu rend le fichier.** Coupure réseau, onglet fermé : le
+destinataire n'a rien reçu, le compter comme servi serait le pire des deux
+mondes. Un fichier n'est définitivement marqué qu'une fois transmis en entier.
+
+**Un fichier n'est effacé que s'il n'a plus aucun lien exploitable.** Le déposant
+a pu créer plusieurs partages du même fichier ; brûler l'un d'eux ne doit pas
+casser silencieusement les autres.
+
+**Le lien consommé répond `410 SHARE_ALREADY_USED`, et non `404`.** Les fichiers
+sont effacés, mais la trace du partage subsiste : le destinataire comprend ce qui
+s'est passé plutôt que de recevoir un « ce lien n'existe pas » déroutant, et le
+déposant voit dans sa liste que le transfert a bien eu lieu.
+
+> **À dire à l'utilisateur avant qu'il coche la case :** l'effacement est
+> irréversible et touche **aussi le déposant**. Les fichiers disparaissent de sa
+> propre liste — c'est précisément ce qui est demandé, mais cela doit être
+> annoncé.
 
 ### Le mot de passe de lien
 
@@ -646,6 +744,9 @@ conditionne pas l'accès. Il est tout de même chiffré en base.
 | Le jeton correspond à un partage | `404` | `SHARE_NOT_FOUND` |
 | Le partage n'est pas révoqué | `403` | `SHARE_REVOKED` |
 | Le partage n'a pas expiré | `410` | `SHARE_EXPIRED` |
+| Le lien à usage unique n'a pas déjà servi | `410` | `SHARE_ALREADY_USED` |
+| Ce fichier n'a pas déjà été pris sur ce lien | `410` | `FILE_ALREADY_DOWNLOADED` |
+| Le fichier demandé fait partie du lien | `404` | `FILE_NOT_IN_SHARE` |
 | Le mot de passe est fourni, s'il en faut un | `401` | `SHARE_PASSWORD_REQUIRED` |
 | Le mot de passe est le bon | `403` | `SHARE_PASSWORD_INVALID` |
 
@@ -705,7 +806,8 @@ Le schéma commenté est dans [`prisma/schema.prisma`](prisma/schema.prisma).
 |---|---|---|
 | `users` | Comptes | `password_hash` |
 | `files` | Métadonnées des fichiers | `original_name_enc`, `dek_wrapped`, `key_version`, `content_iv`, `content_auth_tag`, `storage_name` |
-| `shares` | Liens de partage | `token_hash`, `recipient_email_enc`, `recipient_email_hmac`, `expires_at`, `revoked` |
+| `shares` | Liens de partage | `owner_id`, `token_hash`, `recipient_email_enc`, `recipient_email_hmac`, `expires_at`, `revoked`, `burn_after_download`, `consumed_at` |
+| `share_files` | Fichiers couverts par un lien | `downloaded_at` (verrou du lien à usage unique) |
 | `monthly_usage` | Quota déposé par mois | `period`, `bytes` (cumul, ne décroît jamais) |
 | `refresh_tokens` | Sessions longues | `token_hash`, `family_id`, `revoked_at`, `replaced_by_id` |
 | `revoked_access_tokens` | Déconnexions | `jti`, `expires_at` |
@@ -718,6 +820,81 @@ multiplier trois par champ chiffré.
 jetons issus d'une même connexion partagent une lignée. Si un jeton déjà utilisé
 est rejoué, c'est qu'il a été volé — on révoquera alors la famille entière plutôt
 que ce seul jeton.
+
+---
+
+## Exploitation
+
+### Journaux
+
+Une ligne par requête, en **JSON** hors développement — directement exploitable
+par une centralisation de logs, sans expression d'extraction à écrire :
+
+```json
+{"level":"log","context":"HTTP","message":{"requestId":"f32cd5c1-…","method":"GET","path":"/api/download/:token","status":404,"durationMs":95.42}}
+```
+
+**Ce qu'une ligne ne contient jamais** : ni corps de requête, ni en-têtes, ni
+jeton. Le corps contiendrait les mots de passe à l'inscription ; les en-têtes
+contiendraient les cookies de session et les mots de passe de liens.
+
+**Les jetons de partage sont masqués** avant écriture : `/api/download/k3Jv8Qw2…`
+devient `/api/download/:token`. Depuis que le destinataire n'a plus besoin de
+compte, ce jeton suffit à accéder au fichier — le journaliser reviendrait à
+recopier tous les liens du service dans un fichier souvent centralisé, conservé
+longtemps, et lisible par quiconque a accès à la supervision.
+
+> Le masquage est une **fonction partagée**, pas une précaution dupliquée. La
+> première version le faisait dans le journal de requêtes seulement, tandis que
+> le filtre d'exceptions écrivait l'URL brute de son côté : le secret fuyait
+> donc par l'endroit auquel on ne pensait pas. Vérifié depuis en conditions
+> réelles.
+
+Chaque réponse porte un `X-Request-Id`. Un utilisateur qui signale une erreur
+peut le communiquer, et on retrouve la requête exacte sans fouiller par
+horodatage.
+
+### Limitation des tentatives
+
+| Route | Limite | Ce qu'elle protège |
+|---|---|---|
+| `POST /api/auth/login` | 10 / 5 min | Le mot de passe d'un compte |
+| `POST /api/auth/register` | 10 / heure | La création de comptes en masse |
+| `GET /api/download/:token` | 20 / 5 min | Le mot de passe d'un lien |
+
+Elle vise les secrets **choisis par un humain**, donc devinables. Le jeton d'un
+lien, lui, fait 32 octets aléatoires : le deviner est hors de portée, et il n'a
+pas besoin de cette protection.
+
+Un dépassement répond `429 TOO_MANY_ATTEMPTS` avec un en-tête `Retry-After`.
+
+**Complémentaire du reverse proxy, pas redondante** : le proxy limite le volume
+brut par adresse et protège la disponibilité ; ce garde compte les tentatives
+sur une route précise et protège les mots de passe.
+
+> **Limite assumée** — le compteur est en mémoire. Avec plusieurs instances,
+> chacune compterait de son côté et la limite effective serait multipliée par
+> leur nombre. Cohérent avec le choix d'une instance unique ; à revoir si cela
+> change.
+>
+> **`TRUST_PROXY_HOPS` doit être réglé par SRC.** Derrière un reverse proxy sans
+> ce réglage, toutes les requêtes semblent venir de l'adresse du proxy — et la
+> limitation bloquerait tout le monde d'un coup dès qu'un seul visiteur s'agite.
+
+### Purge des jetons expirés
+
+```bash
+npm run tokens:purge
+```
+
+À planifier une fois par jour. **Sans risque** : ces lignes ne protègent plus
+rien une fois la date passée — un jeton expiré est de toute façon refusé par la
+vérification de signature. La manquer un jour n'ouvre aucun accès, cela laisse
+seulement quelques lignes de plus en base.
+
+```cron
+0 4 * * * cd /srv/filemoica && npm run tokens:purge
+```
 
 ---
 
@@ -773,8 +950,11 @@ le tableau de tests.
 | Sonde | `GET /health` — 200 sain, 503 dégradé |
 | Secrets à fournir | `JWT_SECRET`, `ENCRYPTION_KEY_V1`, `HMAC_INDEX_KEY`, `DATABASE_URL` |
 | Sauvegarde | **Deux artefacts indissociables** : `pg_dump` (les clés chiffrées) **et** le contenu de `STORAGE_PATH` (les fichiers chiffrés). Restaurer l'un sans l'autre ne donne rien d'exploitable |
-| Purge | Les jetons expirés sont à purger périodiquement (script à venir) |
+| Purge | `npm run tokens:purge` à planifier une fois par jour |
+| **`TRUST_PROXY_HOPS`** | **À régler** selon le nombre de relais devant le service. Sans cela, la limitation de tentatives bloque tout le monde d'un coup |
+| Journaux | JSON, une ligne par requête, sur la sortie standard |
 | `ENABLE_API_DOCS` | Expose `/api/docs`. À `true` par défaut ; peut être coupé en production pour réduire ce qu'un attaquant apprend de la surface de l'API |
+| Rotation des clés | `npm run keys:rotate` quand une clé doit être changée |
 
 ### Pour le front (IW 1)
 
@@ -875,10 +1055,15 @@ Les tests les plus significatifs pour l'évaluation :
 | Deux fichiers de même nom n'ont pas le même chiffré | `crypto.service.spec.ts` |
 | Une fuite de la base ne livre aucun lien de partage | `crypto.service.spec.ts` |
 | Une rotation de clés ne casse pas les données existantes | `crypto.service.spec.ts` |
+| Une rotation ne touche pas aux fichiers sur le disque | `key-rotation.e2e-spec.ts` |
+| Le contenu reste déchiffrable après rotation | `key-rotation.e2e-spec.ts` |
 | Une erreur interne ne divulgue rien au client | `all-exceptions.filter.spec.ts` |
 | Un formulaire posté depuis un site tiers est bloqué | `csrf.guard.spec.ts` |
 | La sonde bascule en 503 quand la base tombe | `health.e2e-spec.ts` |
 | Un secret mal formé ne fuite pas dans les logs | `env.validation.spec.ts` |
+| Un jeton de partage n'apparaît jamais dans les journaux | `request-logger.middleware.spec.ts` · `all-exceptions.filter.spec.ts` |
+| Les tentatives répétées sont bloquées par adresse | `rate-limit.guard.spec.ts` |
+| Une variable à `false` est bien interprétée comme fausse | `env.validation.spec.ts` |
 | Un fichier déposé est illisible sur le disque | `files.e2e-spec.ts` |
 | …et reste pourtant récupérable avec sa clé | `files.e2e-spec.ts` |
 | Un utilisateur ne voit pas les fichiers d'un autre | `files.e2e-spec.ts` |
@@ -889,6 +1074,9 @@ Les tests les plus significatifs pour l'évaluation :
 | Une révocation coupe l'accès immédiatement | `shares.e2e-spec.ts` |
 | Un lien protégé refuse le téléchargement sans mot de passe | `shares.e2e-spec.ts` |
 | Un lien protégé ne révèle pas ce qu'il contient | `shares.e2e-spec.ts` |
+| Un lien à usage unique efface les fichiers du serveur | `shares.e2e-spec.ts` |
+| Un lien reste utilisable tant que tous ses fichiers ne sont pas pris | `shares.e2e-spec.ts` |
+| Deux téléchargements simultanés : un seul passe | `shares.e2e-spec.ts` |
 | Un lien expiré répond 410, pas 404 | `shares.e2e-spec.ts` |
 | La base ne contient aucun jeton de partage en clair | `shares.e2e-spec.ts` |
 
@@ -920,7 +1108,6 @@ besoin apparaissait.
 
 | Lot | Contenu |
 |---|---|
-| Rotation | Script de re-chiffrement des données existantes avec une nouvelle clé |
-| Journalisation | Logs structurés pour la centralisation |
-| Purge | Commande de nettoyage des jetons expirés, pour le cron de SRC |
-| Limitation de débit | Ralentir les tentatives répétées sur la connexion |
+| Sauvegarde et restauration | À jouer et chronométrer avec SRC — procédure déjà écrite dans [le document de décision](../docs/decision-stockage-fichiers.md) |
+| Conteneurisation | Dockerfile de l'application — **à répartir avec SRC** |
+| Rétention des fichiers | Aucun nettoyage automatique des fichiers dont tous les partages ont expiré. Politique à décider ensemble |

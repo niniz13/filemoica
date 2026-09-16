@@ -1,9 +1,11 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Reflector } from '@nestjs/core';
 import cookieParser from 'cookie-parser';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { CsrfGuard } from './common/guards/csrf.guard';
-import type { EnvironmentVariables } from './config/env.validation';
+import { RateLimitGuard } from './common/guards/rate-limit.guard';
+import { NodeEnv, type EnvironmentVariables } from './config/env.validation';
 
 /**
  * Applique la configuration transverse de l'application.
@@ -17,6 +19,14 @@ import type { EnvironmentVariables } from './config/env.validation';
  */
 export function configureApp(app: INestApplication): void {
   const config = app.get(ConfigService<EnvironmentVariables, true>);
+
+  // Nombre de relais devant le service. Sans ce réglage, toutes les requêtes
+  // sembleraient venir du reverse proxy et la limitation de débit bloquerait
+  // tout le monde d'un coup.
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .set('trust proxy', config.get('TRUST_PROXY_HOPS', { infer: true }));
 
   // `/health` reste hors préfixe : c'est l'URL que SRC branche sur sa sonde.
   app.setGlobalPrefix('api', { exclude: ['health'] });
@@ -37,7 +47,20 @@ export function configureApp(app: INestApplication): void {
   );
 
   app.useGlobalFilters(new AllExceptionsFilter());
-  app.useGlobalGuards(new CsrfGuard());
+  app.useGlobalGuards(
+    new CsrfGuard(),
+    new RateLimitGuard(
+      app.get(Reflector),
+      config.get('RATE_LIMIT_ENABLED', { infer: true }),
+    ),
+  );
+
+  // En test, seuls les avertissements et les erreurs sont affichés : le journal
+  // d'une ligne par requête noierait la sortie de la suite sous des centaines
+  // de lignes sans rapport avec ce qui est vérifié.
+  if (config.get('NODE_ENV', { infer: true }) === NodeEnv.Test) {
+    app.useLogger(['warn', 'error']);
+  }
 
   app.enableCors({
     // Une seule origine, jamais de joker : `credentials: true` et `origin: '*'`

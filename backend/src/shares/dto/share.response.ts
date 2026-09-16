@@ -1,7 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 /** État courant d'un partage. */
-export type ShareStatus = 'ACTIVE' | 'EXPIRED' | 'REVOKED';
+export type ShareStatus = 'ACTIVE' | 'EXPIRED' | 'REVOKED' | 'CONSUMED';
 
 /** Un fichier tel qu'il apparaît dans un partage. */
 export class SharedFileResponse {
@@ -39,7 +39,17 @@ export class ShareResponse {
   })
   protectedByPassword: boolean;
 
-  @ApiProperty({ enum: ['ACTIVE', 'EXPIRED', 'REVOKED'] })
+  @ApiProperty({
+    description:
+      'Lien à usage unique : il se consume au premier téléchargement réussi.',
+  })
+  singleUse: boolean;
+
+  @ApiProperty({
+    enum: ['ACTIVE', 'EXPIRED', 'REVOKED', 'CONSUMED'],
+    description:
+      '`CONSUMED` : lien à usage unique déjà utilisé. Si le fichier n\'avait pas d\'autre lien, il a été effacé du serveur et ce partage a disparu avec lui.',
+  })
   status: ShareStatus;
 
   @ApiProperty({ format: 'date-time' })
@@ -75,6 +85,12 @@ export class CreatedShareResponse extends ShareResponse {
 export class ShareInfoResponse {
   @ApiProperty({ description: 'Un mot de passe est-il exigé ?' })
   requiresPassword: boolean;
+
+  @ApiProperty({
+    description:
+      'Lien à usage unique. Le front doit prévenir le destinataire : le fichier ne sera plus disponible ensuite.',
+  })
+  singleUse: boolean;
 
   @ApiProperty({ format: 'date-time' })
   expiresAt: Date;

@@ -18,6 +18,7 @@ import type { Response } from 'express';
 import { pipeline } from 'node:stream/promises';
 import { Public } from '../auth/decorators';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
+import { RateLimit } from '../common/guards/rate-limit.guard';
 import { CryptoService } from '../crypto/crypto.service';
 import { FileStorage } from '../storage/file-storage';
 import { ShareInfoResponse } from './dto/share.response';
@@ -137,6 +138,13 @@ export class DownloadController {
     description: '`SHARE_EXPIRED` — le lien a existé, sa durée est écoulée.',
     type: ApiErrorResponse,
   })
+  // Le jeton fait 32 octets aléatoires : le deviner est hors de portée, et ce
+  // n'est pas lui qu'on protège ici. C'est le **mot de passe du lien**, choisi
+  // par un humain, qu'on empêche d'éprouver par essais successifs.
+  //
+  // La limite est large : un lien couvre désormais plusieurs fichiers, et son
+  // destinataire les télécharge légitimement les uns après les autres.
+  @RateLimit({ limit: 60, windowSeconds: 300 })
   @Get(':token/file/:fileId')
   async download(
     @Param('token') token: string,
@@ -147,6 +155,14 @@ export class DownloadController {
     // Lève 404, 403, 410 ou 401 selon le contrôle qui échoue. Rien n'est ouvert
     // tant qu'ils ne sont pas tous passés.
     const granted = await this.shares.authorizeDownload(token, fileId, password);
+
+    // Sur un lien à usage unique, le fichier est réservé **avant** l'envoi :
+    // deux téléchargements simultanés du même fichier ne doivent pas réussir
+    // tous les deux. La réservation porte sur le fichier et non sur le lien,
+    // puisque celui-ci en couvre potentiellement plusieurs.
+    if (granted.burnAfterDownload) {
+      await this.shares.claimFile(granted.shareId, fileId);
+    }
 
     this.harden(response, granted.originalName);
 
@@ -160,10 +176,15 @@ export class DownloadController {
     try {
       // Déchiffrement à la volée : le fichier n'existe en clair que dans le
       // flux qui part vers le destinataire, jamais sur le disque du serveur.
+      //
+      // `end: false` laisse la réponse ouverte : sans cela elle se refermerait
+      // dès le dernier octet, et la consommation du lien s'exécuterait après
+      // coup — invisible du client, et impossible à signaler en cas d'échec.
       await pipeline(
         await this.storage.openRead(granted.storageName),
         decipher,
         response,
+        { end: false },
       );
     } catch (error) {
       // L'intégrité GCM se vérifie à la fin du flux, donc après l'envoi des
@@ -175,8 +196,35 @@ export class DownloadController {
         error instanceof Error ? error.stack : String(error),
       );
 
+      // Le transfert a échoué : le fichier est rendu. Le compter comme
+      // téléchargé alors que le destinataire n'a rien reçu serait le pire des
+      // deux mondes.
+      if (granted.burnAfterDownload) {
+        await this.shares.releaseFile(granted.shareId, fileId);
+      }
+
       response.destroy();
+      return;
     }
+
+    // Le fichier est parti en entier. Si c'était le dernier du lien, celui-ci
+    // est définitivement consommé et ses fichiers effacés du serveur.
+    if (granted.burnAfterDownload) {
+      try {
+        await this.shares.completeIfFullyDownloaded(granted.shareId);
+      } catch (error) {
+        // Le contenu est déjà parti : on ne peut plus rien signaler au client,
+        // et tenter de le faire échouerait sur une réponse déjà entamée. Le
+        // fichier reste marqué téléchargé, donc inutilisable par ce lien — il
+        // ne subsiste au pire que des octets qui auraient dû disparaître.
+        this.logger.error(
+          `Le partage ${granted.shareId} n'a pas pu être consommé après un téléchargement à usage unique`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
+    }
+
+    response.end();
   }
 
   /**

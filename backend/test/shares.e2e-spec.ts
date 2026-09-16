@@ -1,5 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
@@ -30,6 +32,7 @@ describe('Partages (e2e)', () => {
   let prisma: PrismaService;
 
   const CSRF = ['X-Requested-With', 'XMLHttpRequest'] as const;
+  const storageRoot = resolve(process.env.STORAGE_PATH ?? './storage-test');
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -87,6 +90,7 @@ describe('Partages (e2e)', () => {
       recipientEmail?: string;
       expiresInHours?: number;
       password?: string;
+      burnAfterDownload?: boolean;
     } = {},
   ): Promise<{ id: string; token: string }> {
     const response = await request(app.getHttpServer())
@@ -442,6 +446,246 @@ describe('Partages (e2e)', () => {
         .set('Cookie', alice)
         .send({ fileIds: [fileId], recipientEmail: 'pas-un-email', expiresInHours: 24 })
         .expect(400);
+    });
+  });
+
+  describe('Lien à usage unique', () => {
+    it('sert chaque fichier du lien', async () => {
+      const alice = await connecter(ALICE);
+      const un = await deposer(alice, 'un.txt');
+      const deux = await deposer(alice, 'deux.txt');
+      const { token } = await partager(alice, [un, deux], {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, un))
+        .expect(200);
+      await request(app.getHttpServer())
+        .get(telechargement(token, deux))
+        .expect(200);
+    });
+
+    // Le comportement décidé avec le passage au multi-fichiers : consumer au
+    // premier téléchargement laisserait un destinataire ayant plusieurs
+    // fichiers n'en récupérer qu'un.
+    it('reste utilisable tant que tous les fichiers n\'ont pas été pris', async () => {
+      const alice = await connecter(ALICE);
+      const un = await deposer(alice, 'un.txt');
+      const deux = await deposer(alice, 'deux.txt');
+      const { token } = await partager(alice, [un, deux], {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, un))
+        .expect(200);
+
+      // Le lien vit encore : le second fichier reste accessible.
+      const info = await request(app.getHttpServer())
+        .get(`/api/download/${token}/info`)
+        .expect(200);
+      expect(info.body.singleUse).toBe(true);
+    });
+
+    it('refuse de reprendre un fichier déjà téléchargé — 410', async () => {
+      const alice = await connecter(ALICE);
+      const un = await deposer(alice, 'un.txt');
+      const deux = await deposer(alice, 'deux.txt');
+      const { token } = await partager(alice, [un, deux], {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, un))
+        .expect(200);
+
+      const second = await request(app.getHttpServer())
+        .get(telechargement(token, un))
+        .expect(410);
+
+      expect(second.body.error).toBe('FILE_ALREADY_DOWNLOADED');
+    });
+
+    // La promesse forte : la donnée ne survit pas à sa transmission.
+    it('efface tous les fichiers une fois le dernier téléchargé', async () => {
+      const alice = await connecter(ALICE);
+      const un = await deposer(alice, 'un.txt');
+      const deux = await deposer(alice, 'deux.txt');
+      const { token } = await partager(alice, [un, deux], {
+        burnAfterDownload: true,
+      });
+
+      const stockes = await prisma.file.findMany({
+        select: { storageName: true },
+      });
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, un))
+        .expect(200);
+      expect(await prisma.file.count()).toBe(2);
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, deux))
+        .expect(200);
+
+      // Ni en base...
+      expect(await prisma.file.count()).toBe(0);
+      // ...ni sur le disque.
+      for (const { storageName } of stockes) {
+        await expect(
+          readFile(join(storageRoot, storageName)),
+        ).rejects.toThrow();
+      }
+    });
+
+    it('disparaît aussi de la liste du déposant', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier, {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(200);
+
+      const fichiers = await request(app.getHttpServer())
+        .get('/api/files')
+        .set('Cookie', alice)
+        .expect(200);
+
+      expect(fichiers.body).toEqual([]);
+    });
+
+    // Les fichiers sont effacés, mais la ligne du partage subsiste, marquée
+    // consommée : le déposant voit dans sa liste que le lien a bien servi, et
+    // le destinataire reçoit un message qui explique ce qui s'est passé plutôt
+    // qu'un « ce lien n'existe pas » déroutant.
+    it('refuse le lien une fois consommé — 410, en disant pourquoi', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier, {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(200);
+
+      const second = await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(410);
+
+      expect(second.body.error).toBe('SHARE_ALREADY_USED');
+    });
+
+    it('montre le partage comme consommé au déposant', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { id, token } = await partager(alice, fichier, {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(200);
+
+      const liste = await request(app.getHttpServer())
+        .get('/api/shares')
+        .set('Cookie', alice)
+        .expect(200);
+
+      const partage = (liste.body as { id: string; status: string }[]).find(
+        (candidat) => candidat.id === id,
+      );
+      expect(partage?.status).toBe('CONSUMED');
+    });
+
+    // Sans cette vérification, brûler un lien détruirait silencieusement les
+    // autres partages du même fichier.
+    it('conserve le fichier s\'il lui reste un autre lien exploitable', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+
+      const jetable = await partager(alice, fichier, {
+        burnAfterDownload: true,
+      });
+      const durable = await partager(alice, fichier);
+
+      await request(app.getHttpServer())
+        .get(telechargement(jetable.token, fichier))
+        .expect(200);
+
+      expect(await prisma.file.count()).toBe(1);
+      await request(app.getHttpServer())
+        .get(telechargement(durable.token, fichier))
+        .expect(200);
+    });
+
+    it('signale au destinataire que le lien ne servira qu\'une fois', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier, {
+        burnAfterDownload: true,
+      });
+
+      const info = await request(app.getHttpServer())
+        .get(`/api/download/${token}/info`)
+        .expect(200);
+
+      expect(info.body.singleUse).toBe(true);
+    });
+
+    // Deux personnes ouvrent le même fichier en même temps : une seule doit
+    // l'obtenir.
+    it('ne laisse passer qu\'un seul téléchargement simultané', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier, {
+        burnAfterDownload: true,
+      });
+
+      const [un, deux] = await Promise.all([
+        request(app.getHttpServer()).get(telechargement(token, fichier)),
+        request(app.getHttpServer()).get(telechargement(token, fichier)),
+      ]);
+
+      const codes = [un.status, deux.status].sort((a, b) => a - b);
+      expect(codes).toEqual([200, 410]);
+    });
+
+    it('reste un lien ordinaire quand l\'option n\'est pas demandée', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier);
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(200);
+      await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(200);
+    });
+
+    it('combine usage unique et mot de passe', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier, {
+        burnAfterDownload: true,
+        password: 'secret-du-lien',
+      });
+
+      // Un essai raté ne doit pas consumer le fichier.
+      await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .set('X-Share-Password', 'mauvais')
+        .expect(403);
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .set('X-Share-Password', 'secret-du-lien')
+        .expect(200);
     });
   });
 

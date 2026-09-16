@@ -1,9 +1,9 @@
-import { Logger } from '@nestjs/common';
+import { ConsoleLogger, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
-import type { EnvironmentVariables } from './config/env.validation';
+import { NodeEnv, type EnvironmentVariables } from './config/env.validation';
 import { API_DOCS_PATH, setupSwagger } from './swagger';
 
 /**
@@ -14,7 +14,15 @@ import { API_DOCS_PATH, setupSwagger } from './swagger';
  * au public. C'est une des deux décisions communes du sprint.
  */
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    // Hors développement, les journaux sortent en JSON : une ligne par
+    // événement, directement exploitable par la centralisation de logs de
+    // l'infrastructure, sans avoir à écrire d'expressions d'extraction.
+    // En développement, on garde la sortie colorée, bien plus lisible.
+    logger: new ConsoleLogger({
+      json: process.env.NODE_ENV === NodeEnv.Production,
+    }),
+  });
 
   configureApp(app);
 

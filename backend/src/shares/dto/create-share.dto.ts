@@ -4,6 +4,7 @@ import {
   ArrayMinSize,
   ArrayUnique,
   IsArray,
+  IsBoolean,
   IsEmail,
   IsInt,
   IsOptional,
@@ -72,6 +73,15 @@ export class CreateShareDto {
   @IsEmail({}, { message: 'Email du destinataire invalide.' })
   @MaxLength(255)
   recipientEmail?: string;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Lien à usage unique. Le lien se consume une fois que **tous** ses fichiers ont été téléchargés — et non au premier, sinon un destinataire ayant plusieurs fichiers à récupérer n\'en obtiendrait qu\'un. Chaque fichier est alors effacé du serveur s\'il ne lui reste aucun autre lien exploitable. **Irréversible** — prévenir l\'utilisateur avant de cocher.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  burnAfterDownload: boolean = false;
 
   @ApiPropertyOptional({
     minLength: MIN_PASSWORD_LENGTH,

@@ -15,12 +15,16 @@ import type { ShareStatus } from './dto/share.response';
 
 /** Métadonnées nécessaires pour servir un fichier partagé. */
 export interface GrantedDownload {
+  /** Le lien concerné, nécessaire au suivi des liens à usage unique. */
+  shareId: string;
   storageName: string;
   originalName: string;
   sizeBytes: number;
   dekWrapped: string;
   contentIv: string;
   contentAuthTag: string;
+  /** Le lien doit-il se consumer une fois le fichier transmis ? */
+  burnAfterDownload: boolean;
 }
 
 /** Un fichier tel qu'exposé par un partage. */
@@ -99,6 +103,7 @@ export class SharesService {
 
     const share = await this.prisma.share.create({
       data: {
+        ownerId,
         tokenHash: this.crypto.hashToken(token),
         // Facultatif, et purement informatif : c'est le jeton qui donne accès.
         recipientEmailEnc: input.recipientEmail
@@ -112,6 +117,7 @@ export class SharesService {
         passwordHash: input.password
           ? await this.passwords.hash(input.password)
           : null,
+        burnAfterDownload: input.burnAfterDownload,
         expiresAt,
         files: {
           create: input.fileIds.map((fileId) => ({ fileId })),
@@ -134,18 +140,24 @@ export class SharesService {
       files: SharedFile[];
       recipientEmail?: string;
       protectedByPassword: boolean;
+      singleUse: boolean;
       status: ShareStatus;
       expiresAt: Date;
       createdAt: Date;
     }[]
   > {
     const shares = await this.prisma.share.findMany({
-      where: { files: { some: { file: { ownerId } } } },
+      // Filtre sur le propriétaire du lien, et non sur celui de ses fichiers :
+      // un lien à usage unique consommé n'a plus de fichier, et disparaîtrait
+      // de cette liste au moment où son créateur veut vérifier le transfert.
+      where: { ownerId },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
         recipientEmailEnc: true,
         passwordHash: true,
+        burnAfterDownload: true,
+        consumedAt: true,
         revoked: true,
         expiresAt: true,
         createdAt: true,
@@ -166,6 +178,7 @@ export class SharesService {
       // L'empreinte elle-même ne sort jamais : on n'en expose que l'existence,
       // pour que le déposant sache quels liens il a protégés.
       protectedByPassword: share.passwordHash !== null,
+      singleUse: share.burnAfterDownload,
       status: this.statusOf(share),
       expiresAt: share.expiresAt,
       createdAt: share.createdAt,
@@ -183,7 +196,7 @@ export class SharesService {
    */
   async revoke(ownerId: string, shareId: string): Promise<void> {
     const share = await this.prisma.share.findFirst({
-      where: { id: shareId, files: { some: { file: { ownerId } } } },
+      where: { id: shareId, ownerId },
       select: { id: true, revoked: true },
     });
 
@@ -227,6 +240,7 @@ export class SharesService {
     password?: string,
   ): Promise<{
     requiresPassword: boolean;
+    singleUse: boolean;
     expiresAt: Date;
     files?: SharedFile[];
   }> {
@@ -241,6 +255,8 @@ export class SharesService {
 
     return {
       requiresPassword,
+      // Le front doit pouvoir prévenir : « ce lien ne servira qu'une fois ».
+      singleUse: share.burnAfterDownload,
       expiresAt: share.expiresAt,
       ...(unlocked
         ? { files: share.files.map((file) => this.toSharedFile(file)) }
@@ -295,12 +311,14 @@ export class SharesService {
     }
 
     return {
+      shareId: share.id,
       storageName: file.storageName,
       originalName: this.crypto.openToString(file.originalNameEnc),
       sizeBytes: file.sizeBytes,
       dekWrapped: file.dekWrapped,
       contentIv: file.contentIv,
       contentAuthTag: file.contentAuthTag,
+      burnAfterDownload: share.burnAfterDownload,
     };
   }
 
@@ -340,6 +358,103 @@ export class SharesService {
   }
 
   /**
+   * Réserve un fichier d'un lien à usage unique avant de l'envoyer.
+   *
+   * La mise à jour est **conditionnée à la nullité de `downloadedAt`** : si deux
+   * téléchargements du même fichier partent en même temps, la base n'en laisse
+   * passer qu'un et le second se voit refusé. Sans ce verrou, les deux
+   * serviraient le fichier avant que l'un ait eu le temps de le marquer.
+   *
+   * La réservation porte sur **le fichier** et non sur le lien : celui-ci en
+   * couvre plusieurs, et le destinataire les récupère l'un après l'autre.
+   *
+   * @throws {GoneException} Si ce fichier a déjà été téléchargé via ce lien.
+   */
+  async claimFile(shareId: string, fileId: string): Promise<void> {
+    const claimed = await this.prisma.shareFile.updateMany({
+      where: { shareId, fileId, downloadedAt: null },
+      data: { downloadedAt: new Date() },
+    });
+
+    if (claimed.count === 0) {
+      throw new GoneException({
+        error: 'FILE_ALREADY_DOWNLOADED',
+        message: 'Ce fichier a déjà été téléchargé via ce lien à usage unique.',
+      });
+    }
+  }
+
+  /**
+   * Rend un fichier dont le transfert a échoué.
+   *
+   * Une coupure réseau ou un onglet fermé ne doit pas consommer le fichier : le
+   * destinataire n'aurait rien reçu et n'aurait plus aucun moyen de réessayer.
+   */
+  async releaseFile(shareId: string, fileId: string): Promise<void> {
+    await this.prisma.shareFile.updateMany({
+      where: { shareId, fileId },
+      data: { downloadedAt: null },
+    });
+
+    this.logger.warn(
+      `Fichier ${fileId} du lien ${shareId} libéré : le téléchargement a échoué`,
+    );
+  }
+
+  /**
+   * Consomme le lien si **tous** ses fichiers ont été téléchargés.
+   *
+   * ## Pourquoi « tous » et non « le premier »
+   *
+   * Un lien couvre une session de dépôt entière. Le consumer au premier fichier
+   * téléchargé laisserait un destinataire ayant trois fichiers à récupérer n'en
+   * obtenir qu'un — l'option deviendrait un piège plutôt qu'une protection.
+   *
+   * ## Ce qui se passe ensuite
+   *
+   * Chaque fichier n'est effacé que s'il ne lui reste **aucun autre lien
+   * exploitable** : supprimer sans vérifier casserait silencieusement les
+   * partages que le déposant aurait créés en parallèle.
+   *
+   * @returns Le nombre de fichiers réellement effacés du serveur.
+   */
+  async completeIfFullyDownloaded(shareId: string): Promise<number> {
+    const restants = await this.prisma.shareFile.count({
+      where: { shareId, downloadedAt: null },
+    });
+
+    if (restants > 0) {
+      this.logger.log(
+        `Lien ${shareId} : ${restants} fichier(s) restant(s) avant consommation`,
+      );
+      return 0;
+    }
+
+    const couverts = await this.prisma.shareFile.findMany({
+      where: { shareId },
+      select: { fileId: true },
+    });
+
+    // Le lien est marqué consommé **avant** l'effacement : même si la
+    // suppression échoue, il ne doit plus servir.
+    await this.prisma.share.updateMany({
+      where: { id: shareId, consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+
+    this.logger.log(`Lien à usage unique consommé : ${shareId}`);
+
+    let efface = 0;
+    for (const { fileId } of couverts) {
+      if (await this.files.removeIfNoUsableShare(fileId)) {
+        efface += 1;
+      }
+    }
+
+    return efface;
+  }
+
+  /**
    * Retrouve un partage encore exploitable, ou échoue.
    *
    * Regroupe les trois contrôles communs à la consultation et au
@@ -347,8 +462,10 @@ export class SharesService {
    * être refusé partout de la même façon.
    */
   private async findUsable(token: string): Promise<{
+    id: string;
     passwordHash: string | null;
     expiresAt: Date;
+    burnAfterDownload: boolean;
     files: {
       id: string;
       storageName: string;
@@ -362,9 +479,12 @@ export class SharesService {
     const share = await this.prisma.share.findUnique({
       where: { tokenHash: this.crypto.hashToken(token) },
       select: {
+        id: true,
         revoked: true,
         expiresAt: true,
         passwordHash: true,
+        burnAfterDownload: true,
+        consumedAt: true,
         files: { select: { file: { select: FILE_SELECT } } },
       },
     });
@@ -392,17 +512,40 @@ export class SharesService {
       });
     }
 
+    if (share.consumedAt) {
+      throw new GoneException({
+        error: 'SHARE_ALREADY_USED',
+        message: 'Ce lien à usage unique a déjà servi.',
+      });
+    }
+
     return {
+      id: share.id,
       passwordHash: share.passwordHash,
       expiresAt: share.expiresAt,
+      burnAfterDownload: share.burnAfterDownload,
       files: share.files.map(({ file }) => file),
     };
   }
 
-  /** Détermine l'état affiché d'un partage. */
-  private statusOf(share: { revoked: boolean; expiresAt: Date }): ShareStatus {
+  /**
+   * Détermine l'état affiché d'un partage.
+   *
+   * L'ordre traduit une hiérarchie : ce que le propriétaire a décidé prime sur
+   * ce qui est arrivé, et ce qui est arrivé prime sur le simple écoulement du
+   * temps.
+   */
+  private statusOf(share: {
+    revoked: boolean;
+    consumedAt: Date | null;
+    expiresAt: Date;
+  }): ShareStatus {
     if (share.revoked) {
       return 'REVOKED';
+    }
+
+    if (share.consumedAt) {
+      return 'CONSUMED';
     }
 
     return share.expiresAt.getTime() <= Date.now() ? 'EXPIRED' : 'ACTIVE';
