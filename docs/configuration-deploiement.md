@@ -11,7 +11,7 @@ Pour ce qu'on attend de vous et les questions en suspens, voir
 
 ## En bref — le minimum vital
 
-Si vous ne lisez qu'une section, c'est celle-ci. **Six valeurs à fournir**, tout
+Si vous ne lisez qu'une section, c'est celle-ci. **Neuf valeurs à fournir**, tout
 le reste a une valeur par défaut raisonnable :
 
 | Variable | Comment l'obtenir |
@@ -20,11 +20,20 @@ le reste a une valeur par défaut raisonnable :
 | `JWT_SECRET` | 64 caractères hexadécimaux, générés (voir plus bas) |
 | `ENCRYPTION_KEY_V1` | 64 caractères hexadécimaux, générés |
 | `HMAC_INDEX_KEY` | 64 caractères hexadécimaux, générés |
+| **`BREVO_API_KEY`** | **Transmise par l'équipe IW** — voir « Envoi de courriels » |
+| **`MAIL_FROM_ADDRESS`** | L'adresse d'expédition, **validée dans Brevo** |
+| **`APP_PUBLIC_URL`** | L'URL publique du front : elle construit les liens envoyés par courriel |
 | `FRONTEND_ORIGIN` | L'URL exacte du front, par exemple `https://filemoica.example.fr` |
 | `TRUST_PROXY_HOPS` | Nombre de relais devant le service — `1` derrière un reverse proxy |
 
 Plus une décision d'infrastructure : **le volume de stockage doit appartenir à
 l'uid 1000**. C'est le point qui casse le plus souvent.
+
+> ⚠️ **Deux migrations sont à appliquer** avant de servir cette version :
+> `verification_adresse_email` et `double_authentification`.
+> `npm run db:deploy` s'en charge. Sur une base déjà en service, **aucune
+> connexion ne fonctionnera tant qu'elles ne sont pas passées** — les tables
+> `email_verifications` et `mfa_challenges` n'existeraient pas.
 
 Partez de [`backend/.env.deploy.example`](../backend/.env.deploy.example), il
 contient déjà la structure.
@@ -89,7 +98,70 @@ non. Rangez-la ailleurs, mais rangez-la.
 
 ---
 
-## 2. Base de données
+## 2. Envoi de courriels — Brevo
+
+Le service envoie deux types de messages, et **les deux bloquent la connexion
+s'ils n'arrivent pas** :
+
+| Message | Quand | Sans lui |
+|---|---|---|
+| Lien de confirmation | À l'inscription | Le compte ne peut pas être activé |
+| Code à six chiffres | À chaque connexion | Personne ne peut se connecter |
+
+| Variable | Obligatoire | Défaut | Rôle |
+|---|---|---|---|
+| `BREVO_API_KEY` | **oui en production** | — | Clé d'API Brevo, préfixe `xkeysib-` |
+| `MAIL_FROM_ADDRESS` | oui | `martin.simn91@gmail.com` | Adresse d'expédition, **validée dans Brevo** |
+| `MAIL_FROM_NAME` | non | `filemoica` | Nom affiché de l'expéditeur |
+| `APP_PUBLIC_URL` | oui | `http://localhost:3001` | Base des liens envoyés par courriel |
+
+### ⚠️ Le service refuse de démarrer sans la clé
+
+En production, l'absence de `BREVO_API_KEY` fait **échouer le démarrage**, avec
+un message explicite. Ce n'est pas une négligence de configuration qu'on
+rattrape plus tard : sans clé, le service se replie sur l'écriture des messages
+**dans les journaux** — et un code d'authentification écrit dans les journaux
+n'est plus un secret. Il serait lisible par quiconque accède à la supervision.
+
+Ce repli n'existe que hors production, pour permettre de développer sans compte
+Brevo.
+
+### La clé vous est transmise séparément
+
+**Elle n'est pas dans le dépôt et ne doit jamais y entrer.** Demandez-la à
+l'équipe IW, et transmettez-la comme les autres secrets — pas par messagerie
+d'équipe ni par courriel.
+
+Une clé Brevo permet d'envoyer des courriels **en votre nom** : elle se traite
+comme un mot de passe. Si elle fuit, révoquez-la depuis Brevo
+(*SMTP & API → API Keys*) et générez-en une neuve ; rien d'autre n'est à
+changer côté service.
+
+### L'expéditeur doit être validé dans Brevo
+
+C'est le refus le plus courant, et il ne se voit qu'à la première tentative
+d'envoi. Dans Brevo : *Senders & IP → Senders*, ajouter l'adresse, puis
+**cliquer le lien de confirmation reçu**.
+
+Sans cette validation, Brevo répond `400` avec `Sender not valid` — le service
+journalise l'erreur, et **l'inscription réussit quand même** : le compte est
+créé, mais son propriétaire n'a pas reçu le lien. Il peut en redemander un.
+
+### Vérifier que l'envoi fonctionne
+
+Inscrivez un compte de test avec une adresse que vous relevez, et regardez les
+journaux :
+
+```
+[MailService] Courriel envoyé à ma***@example.fr
+```
+
+Si vous lisez à la place `BREVO_API_KEY absente — le courriel n'est PAS envoyé`,
+c'est que le service tourne hors production sans clé.
+
+---
+
+## 3. Base de données
 
 | Variable | Obligatoire | Défaut | Rôle |
 |---|---|---|---|
@@ -113,7 +185,7 @@ que l'application démarre. Voir [coordination-src.md](coordination-src.md).
 
 ---
 
-## 3. Exposition et réseau
+## 4. Exposition et réseau
 
 | Variable | Obligatoire | Défaut | Rôle |
 |---|---|---|---|
@@ -156,7 +228,7 @@ TLS.
 
 ---
 
-## 4. Stockage
+## 5. Stockage
 
 | Variable | Obligatoire | Défaut | Rôle |
 |---|---|---|---|
@@ -187,7 +259,7 @@ Restaurer l'un sans l'autre ne donne rien d'exploitable.
 
 ---
 
-## 5. Offre et quotas
+## 6. Offre et quotas
 
 Ajustables **sans redéployer le code** — c'est le but. Les valeurs par défaut
 conviennent à la mise en ligne.
@@ -214,7 +286,7 @@ redémarrage.
 
 ---
 
-## 6. Variables à laisser tranquilles
+## 7. Variables à laisser tranquilles
 
 Elles ont une valeur par défaut choisie pour de bonnes raisons. Les changer sans
 raison dégrade la sécurité.
@@ -237,7 +309,7 @@ est vraie.
 
 ---
 
-## 7. Rotation de clé — `ENCRYPTION_KEY_V2`
+## 8. Rotation de clé — `ENCRYPTION_KEY_V2`
 
 Variable **optionnelle**, absente en temps normal. Elle ne sert que pendant une
 rotation de la clé maître.
@@ -262,7 +334,7 @@ terminée : tant qu'un fichier est encore en `v1`, la perdre le rend illisible.
 
 ---
 
-## 8. Tâches planifiées
+## 9. Tâches planifiées
 
 ```cron
 0 3 * * * docker compose -f /srv/filemoica/docker-compose.deploy.yml -p filemoica exec -T app node dist/purge-files.js
@@ -283,7 +355,7 @@ docker compose -p filemoica exec -T app node dist/purge-files.js --dry-run
 
 ---
 
-## 9. Vérifier que le déploiement fonctionne
+## 10. Vérifier que le déploiement fonctionne
 
 `/health` ne prouve que la capacité du service à répondre à sa propre sonde. Le
 script de vérification, lui, joue un **parcours complet** — compte, dépôt, lien,
@@ -316,6 +388,9 @@ du préfixe `/api`** et sans authentification.
 
 - [ ] Générer les trois clés, **différentes entre elles**
 - [ ] Les ranger **ailleurs que les sauvegardes**
+- [ ] **Récupérer `BREVO_API_KEY` auprès de l'équipe IW**, hors messagerie
+- [ ] **Vérifier que `MAIL_FROM_ADDRESS` est validée dans Brevo**
+- [ ] `APP_PUBLIC_URL` = l'URL publique du front (elle part dans les courriels)
 - [ ] Remplir `.env.deploy` à partir du modèle
 - [ ] `NODE_ENV=production`
 - [ ] `APP_VERSION` = le tag git déployé
@@ -323,10 +398,11 @@ du préfixe `/api`** et sans authentification.
 - [ ] `TRUST_PROXY_HOPS` = nombre réel de relais
 - [ ] Volume monté sur `/var/lib/filemoica/storage`, **propriétaire uid 1000**
 - [ ] HTTPS en place sur le reverse proxy
-- [ ] Migrations appliquées (conteneur `migrations`)
+- [ ] Migrations appliquées — dont **`verification_adresse_email`** et **`double_authentification`**
 - [ ] Les deux tâches `cron` posées
 - [ ] Sauvegardes planifiées — **base ET volume**
 - [ ] `node scripts/verifier-deploiement.mjs <url>` → 0 échec
+- [ ] **Un compte de test inscrit, courriel reçu, connexion complète jusqu'au code**
 
 ---
 
@@ -354,6 +430,10 @@ du préfixe `/api`** et sans authentification.
 | `RATE_LIMIT_ENABLED` | non | `true` | booléen |
 | `ENABLE_API_DOCS` | non | `true` | booléen |
 | `COOKIE_DOMAIN` | non | absent | texte |
+| **`BREVO_API_KEY`** | **oui en production** | — | clé Brevo, préfixe `xkeysib-` |
+| `MAIL_FROM_ADDRESS` | oui | `martin.simn91@gmail.com` | adresse **validée dans Brevo** |
+| `MAIL_FROM_NAME` | non | `filemoica` | texte |
+| `APP_PUBLIC_URL` | oui | `http://localhost:3001` | URL `http`/`https` |
 | `ENCRYPTION_KEY_V2` | non | absent | 64 caractères hexadécimaux, **rotation seulement** |
 | `POSTGRES_USER` | non | `filemoica` | *niveau compose* |
 | `POSTGRES_PASSWORD` | **oui** | — | *niveau compose* |

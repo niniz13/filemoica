@@ -70,6 +70,23 @@ Front sur **3001**, backend sur **3000**.
 
 **Mot de passe commun : `demonstration-filemoica-2026`**
 
+> ⚠️ **La connexion se fait en deux temps.** Après le mot de passe, un **code à
+> six chiffres** arrive par courriel. Les comptes de démonstration utilisent des
+> adresses `@filemoica.fr` qui n'existent pas : **vous ne recevrez jamais leur
+> code.**
+>
+> **Sans clé Brevo dans `backend/.env`, le code s'affiche dans le terminal du
+> backend** — c'est le mode de secours prévu pour cela :
+>
+> ```
+> WARN [MailService] BREVO_API_KEY absente — le courriel n'est PAS envoyé
+> WARN [MailService]   Message : Votre code de connexion : 482913 | ...
+> ```
+>
+> **C'est le réglage que je recommande pour l'oral** : aucune dépendance au
+> réseau, et le code est sous les yeux. Pour montrer un vrai envoi, inscrivez un
+> compte avec **votre propre adresse** — là, la clé Brevo est nécessaire.
+
 | Compte | Rôle | Offre | Ce qu'il sert à montrer |
 |---|---|---|---|
 | `admin@filemoica.fr` | ADMIN | Payante | Le panneau de gestion des comptes |
@@ -86,30 +103,63 @@ travers, il remet les trois comptes d'aplomb sans toucher au reste.
 Dans cet ordre : chaque étape prépare la suivante, et l'ensemble raconte le
 produit puis la sécurité.
 
+### Acte 0 — l'inscription et la double authentification *(2 min)*
+
+| # | Action | Ce que ça prouve |
+|---|---|---|
+| 1 | S'inscrire avec **votre propre adresse** | Écran « Compte créé — vérifiez votre boîte » |
+| 2 | Tenter de se connecter **sans confirmer** | ❌ Refusé : une adresse non confirmée n'ouvre aucun compte |
+| 3 | Ouvrir le lien reçu par courriel | ✅ « Adresse confirmée » |
+| 4 | Se connecter : mot de passe accepté | Écran **« Code de connexion »** — *aucune session n'est encore ouverte* |
+| 5 | Saisir le code à six chiffres | ✅ Vous entrez |
+
+> **La phrase à dire au point 4 :** le mot de passe seul ne donne plus accès au
+> compte. Même volé, il ne suffit pas — il faut aussi la boîte aux lettres.
+
+**Si on vous demande pourquoi six chiffres suffisent** : ce n'est pas la
+longueur du code qui protège, c'est **cinq essais par défi et dix minutes de
+validité**. Le code est en plus haché en argon2id, pas en SHA-256 — un million
+de combinaisons se casserait en millisecondes autrement.
+
 ### Acte 1 — le parcours normal *(3 min)*
 
 | # | Action | Ce que ça prouve |
 |---|---|---|
-| 1 | Se connecter en `alice@filemoica.fr` | — |
-| 2 | Déposer un fichier | Le dépôt est chiffré **pendant** le transfert, jamais en clair sur le disque |
-| 3 | Créer un lien : durée **1 h**, mot de passe, usage unique | Le déposant maîtrise la durée de vie et la protection |
-| 4 | Copier le lien, l'ouvrir **en navigation privée** | **Le destinataire n'a pas de compte** — c'est le cœur du produit |
+| 1 | Déposer un fichier | Le dépôt est chiffré **pendant** le transfert, jamais en clair sur le disque |
+| 2 | Cocher **usage unique**, mettre un **mot de passe**, durée **1 h** | Le déposant maîtrise la durée de vie et la protection |
+| 3 | Copier le lien, l'ouvrir **en navigation privée** | **Le destinataire n'a pas de compte** — c'est le cœur du produit |
+| 4 | Avant le mot de passe, regarder l'écran | **Aucun nom de fichier n'est divulgué** |
 | 5 | Saisir le mot de passe, télécharger | Le fichier arrive intact |
-| 6 | Recharger le lien | `410` — le lien à usage unique est consommé, le fichier effacé du serveur |
+| 6 | Recharger le lien | « Lien épuisé » — consommé, fichiers effacés du serveur |
+| 7 | Revenir sur **« Mes fichiers »** | Le fichier a disparu : la donnée ne survit pas à sa transmission |
 
 > La navigation privée n'est pas un détail de mise en scène : elle prouve qu'il
 > n'y a **aucune session** derrière le téléchargement.
+
+**Le point 4 mérite qu'on s'y arrête** : tant que le mot de passe n'est pas
+donné, le serveur ne dit même pas *comment s'appellent* les fichiers.
 
 ### Acte 2 — le contrôle d'accès *(2 min)*
 
 | # | Action | Résultat attendu |
 |---|---|---|
-| 7 | Créer un second lien, puis le **révoquer** depuis la liste | Le lien répond `403`, immédiatement |
-| 8 | Se connecter en `bob@filemoica.fr` | Sa liste de fichiers est **vide** — il ne voit pas ceux d'Alice |
-| 9 | Se connecter en `admin@filemoica.fr`, ouvrir le panneau | Comptes, offres, quotas |
-| 10 | Passer Alice en **offre payante** | Son quota passe de 200 Mo à 20 Go |
+| 8 | Créer un lien sur un fichier, l'ouvrir, puis le **révoquer** depuis **« Mes liens »** | Recharger la page du destinataire : accès coupé **immédiatement** |
+| 9 | Regarder l'onglet **« Mes liens »** | Les états sont distingués : Actif, **Consommé**, Expiré, **Révoqué** |
+| 10 | Faire remarquer qu'aucun lien n'y est réaffiché | Le serveur n'en garde qu'une **empreinte SHA-256** — il en est incapable |
+| 11 | Se connecter en `bob@filemoica.fr` | Sa liste de fichiers est **vide** — il ne voit pas ceux d'Alice |
+| 12 | Se connecter en `admin@filemoica.fr`, ouvrir le panneau | Comptes, offres, quotas |
+| 13 | Passer Alice en **offre payante** | Son quota passe de 200 Mo à 20 Go |
+| 14 | Cliquer **« Déconnecter partout »** sur un compte | « N sessions coupées » |
 
-> **La phrase à dire au point 9 :** un administrateur gère des **comptes**,
+> **Au point 14, la nuance qui fait la différence :** cette action révoque les
+> jetons de *renouvellement*. La session en cours reste valable **jusqu'à 15
+> minutes** — les jetons d'accès sont autoportants, le serveur n'en tient pas la
+> liste. Ce qui est **instantané**, c'est le retrait du rôle : il est relu en
+> base à chaque appel.
+>
+> Face à un compte compromis : **« Retirer admin » d'abord**, puis déconnecter.
+
+> **La phrase à dire au point 12 :** un administrateur gère des **comptes**,
 > jamais du **contenu**. Il voit *combien* de fichiers un compte possède, jamais
 > *lesquels*. C'est une frontière de conception : le serveur détient les clés et
 > pourrait tout lire — ne pas offrir ce chemin dans l'API est précisément ce qui
@@ -170,7 +220,7 @@ Aucun fichier n'est relu : seules les petites clés sont re-scellées.
 
 ### Les autres chiffres
 
-- **296 tests** au vert (128 unitaires, 168 de bout en bout)
+- **324 tests** au vert (140 unitaires, 184 de bout en bout)
 - Restauration complète mesurée, contenu **identique au bit près**
 - Détail : [résultats des tests](resultats-des-tests.md)
 
@@ -203,10 +253,13 @@ la branche `consolidation-compose`.)*
 
 ## 6. Récapitulatif — à cocher avant d'entrer
 
-- [ ] `npm install` fait dans **frontend** *(pas encore fait)*
-- [ ] `backend/.env` rempli avec les 3 clés
+- [ ] `npm install` fait dans **frontend**
+- [ ] `backend/.env` rempli, avec `FRONTEND_ORIGIN=http://localhost:3001`
+- [ ] **Décidé pour les courriels** : clé Brevo renseignée (envoi réel) *ou* laissée vide (code dans le terminal)
 - [ ] `npm run db:up` → base démarrée
-- [ ] `npm run seed` → 3 comptes créés
+- [ ] `npm run build` puis `npm run seed` → 3 comptes créés **et confirmés**
 - [ ] Backend sur 3000, frontend sur 3001, `/health` répond `200`
+- [ ] **Le terminal du backend est visible** — c'est là que s'affiche le code de connexion
+- [ ] Une connexion de démonstration **déjà répétée une fois** : le code à six chiffres surprend la première fois
 - [ ] Un onglet de **navigation privée** déjà ouvert, pour l'acte 1
 - [ ] Un fichier de test sous la main (un PDF ou une image, pas un fichier vide)

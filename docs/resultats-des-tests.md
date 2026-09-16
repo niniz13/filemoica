@@ -1,4 +1,4 @@
-﻿# Résultats des tests — Backend
+# Résultats des tests — Backend
 
 **Version de référence :** `7540cd8` · **Date du relevé :** 16/09/2026
 
@@ -9,7 +9,7 @@
 | Exécution | Node.js 24.19.0 |
 | Base de données | PostgreSQL 17.11 (conteneur `postgres:17-alpine`) |
 | Application | compilée, lancée depuis `dist/` |
-| Migrations appliquées | 7 |
+| Migrations appliquées | 9 |
 | Poste | Windows 11, base exposée sur le port 5433 |
 
 ## Comment lire ce tableau
@@ -67,6 +67,32 @@ Ce qui n'a pas été vérifié est listé en fin de document, séparément.
 | 3.14 | Formulaire posté depuis un site tiers (CSRF) | Refusé | ✅ `403 CSRF_HEADER_MISSING` | Automatisé | `csrf.guard.spec.ts` |
 | 3.15 | Tentative d'élévation à l'inscription (`role: ADMIN`) | Refusée, pas ignorée | ✅ `400 VALIDATION_ERROR` | Automatisé | `auth.e2e-spec.ts` |
 | 3.16 | 11ᵉ tentative de connexion consécutive | Blocage temporaire | ✅ 10 × `401` puis `429` + `Retry-After` | Observé | 16/09 |
+
+## 3 bis. Authentification renforcée
+
+*Ajoutée le 16/09 : confirmation d'adresse à l'inscription, et double
+authentification par courriel à chaque connexion.*
+
+| # | Test | Attendu | Obtenu | Nature | Preuve |
+|---|---|---|---|---|---|
+| 3.17 | Connexion avec une adresse non confirmée | Refus, malgré un mot de passe valide | ✅ `403 EMAIL_NOT_VERIFIED` | Automatisé | `auth.e2e-spec.ts` |
+| 3.18 | Le refus vient-il **après** la vérification du mot de passe ? | Oui — sinon on énumère les comptes | ✅ Vérifié unitairement | Automatisé | `auth.service.spec.ts` |
+| 3.19 | Date de confirmation **absente** (et non nulle) | Refus aussi | ✅ Refusé | Automatisé | « refuse aussi quand la date est absente » |
+| 3.20 | Jeton de confirmation en base | Empreinte seule | ✅ SHA-256, jeton absent | Automatisé | `auth.e2e-spec.ts` |
+| 3.21 | Redemander un lien invalide-t-il le précédent ? | Oui | ✅ L'ancien est consommé | Automatisé | `auth.e2e-spec.ts` |
+| 3.22 | `resend-verification` sur une adresse inconnue | **Même réponse** qu'un compte réel | ✅ `204` dans les deux cas | Automatisé | Sinon la route dit qui est inscrit |
+| 3.23 | Première étape de connexion | **Aucun cookie posé** | ✅ `{mfaRequired:true}`, `Set-Cookie` absent | Automatisé | `auth.e2e-spec.ts` |
+| 3.24 | Code de connexion en base | Empreinte argon2id | ✅ `$argon2id$…`, aucun chiffre lisible | Automatisé | Six chiffres en SHA-256 se cassent en millisecondes |
+| 3.25 | Code faux | Refus | ✅ `401 MFA_CODE_INVALID` | Automatisé | `auth.e2e-spec.ts` |
+| 3.26 | **Cinq essais infructueux**, puis le bon code | Refusé quand même | ✅ Le défi est clos | Automatisé | C'est cela qui rend six chiffres suffisants |
+| 3.27 | Rejouer un défi déjà utilisé | Refus | ✅ `401` | Automatisé | `auth.e2e-spec.ts` |
+| 3.28 | Défi expiré | Refus | ✅ `401` | Automatisé | `auth.e2e-spec.ts` |
+| 3.29 | Relancer une connexion | Le défi précédent est invalidé | ✅ L'ancien code ne passe plus | Automatisé | Sinon deux codes valides coexistent |
+
+**Ce qui rend un code à six chiffres défendable** : ce n'est pas sa longueur —
+un million de combinaisons se parcourt vite. C'est la conjonction de **cinq
+essais**, **dix minutes de validité**, et d'une empreinte **argon2id** qui rend
+coûteuse toute tentative hors ligne si la base fuyait pendant la fenêtre.
 
 ## 4. Chiffrement au repos
 
@@ -238,13 +264,13 @@ le volume remonté, le destinataire peut réessayer.
 
 | Commande | Résultat | Date |
 |---|---|---|
-| `npm test` | **128 / 128** | 16/09 |
-| `npm run test:e2e` | **168 / 168** (8 suites) | 16/09 |
+| `npm test` | **140 / 140** | 16/09 |
+| `npm run test:e2e` | **184 / 184** (8 suites) | 16/09 |
 | `npm run lint` | 0 avertissement | 16/09 |
 | `npx tsc --noEmit` | 0 erreur | 16/09 |
 | `npm run build` | Succès | 16/09 |
 
-**296 tests**, dont 168 de bout en bout contre une vraie base PostgreSQL et un
+**324 tests**, dont 184 de bout en bout contre une vraie base PostgreSQL et un
 vrai répertoire de stockage — pas des doubles.
 
 ---
