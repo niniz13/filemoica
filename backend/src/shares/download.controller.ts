@@ -10,6 +10,7 @@ import type { Response } from 'express';
 import { pipeline } from 'node:stream/promises';
 import { Public } from '../auth/decorators';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
+import { RateLimit } from '../common/guards/rate-limit.guard';
 import { CryptoService } from '../crypto/crypto.service';
 import { FileStorage } from '../storage/file-storage';
 import { ShareInfoResponse } from './dto/share.response';
@@ -114,6 +115,10 @@ export class DownloadController {
     description: '`SHARE_EXPIRED` — le lien a existé, sa durée est écoulée.',
     type: ApiErrorResponse,
   })
+  // Le jeton fait 32 octets aléatoires : le deviner est hors de portée, et ce
+  // n'est pas lui qu'on protège ici. C'est le **mot de passe du lien**, choisi
+  // par un humain, qu'on empêche d'éprouver par essais successifs.
+  @RateLimit({ limit: 20, windowSeconds: 300 })
   @Get(':token')
   async download(
     @Param('token') token: string,

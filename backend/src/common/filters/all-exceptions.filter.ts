@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { redactPath } from '../logging/redact-path';
 
 /**
  * Corps d'erreur renvoyé par l'API, quelle que soit la panne.
@@ -50,15 +51,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const body = this.toErrorBody(exception, status);
 
+    // L'URL est masquée avant d'être écrite : celle d'un téléchargement
+    // contient le jeton du lien, qui suffit à accéder au fichier.
+    const path = redactPath(request.originalUrl ?? request.url);
+
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       // Seul endroit où la vraie erreur est visible : les logs serveur.
       this.logger.error(
-        `${request.method} ${request.url} -> ${status}`,
+        `${request.method} ${path} -> ${status}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
     } else {
       this.logger.debug(
-        `${request.method} ${request.url} -> ${status} (${body.error})`,
+        `${request.method} ${path} -> ${status} (${body.error})`,
       );
     }
 

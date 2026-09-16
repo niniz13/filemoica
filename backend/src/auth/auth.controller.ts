@@ -19,6 +19,7 @@ import {
 } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
+import { RateLimit } from '../common/guards/rate-limit.guard';
 import { AuthService } from './auth.service';
 import { CookieService, REFRESH_COOKIE } from './cookie.service';
 import { CurrentUser, Public } from './decorators';
@@ -55,6 +56,9 @@ export class AuthController {
 
   /** Crée un compte. Ne connecte pas : l'utilisateur enchaîne sur `/login`. */
   @Public()
+  // Large : c'est l'usage normal d'une personne qui se trompe, pas une
+  // tentative d'attaque. La limite vise la création de comptes en masse.
+  @RateLimit({ limit: 10, windowSeconds: 3600 })
   @ApiOperation({ summary: 'Créer un compte' })
   @ApiResponse({ status: 201, description: 'Compte créé.', type: UserResponse })
   @ApiResponse({
@@ -81,6 +85,10 @@ export class AuthController {
    * existent.
    */
   @Public()
+  // Le mot de passe d'un compte est choisi par un humain, donc devinable.
+  // argon2id rend chaque essai coûteux ; cette limite rend leur répétition
+  // inutile.
+  @RateLimit({ limit: 10, windowSeconds: 300 })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Se connecter',
