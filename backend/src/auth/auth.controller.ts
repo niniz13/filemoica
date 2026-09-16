@@ -21,9 +21,16 @@ import type { Request, Response } from 'express';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
 import { RateLimit } from '../common/guards/rate-limit.guard';
 import { AuthService } from './auth.service';
+import { EmailVerificationService } from './email-verification.service';
+import { MfaService } from './mfa.service';
 import { CookieService, REFRESH_COOKIE } from './cookie.service';
 import { CurrentUser, Public } from './decorators';
 import { CredentialsDto } from './dto/credentials.dto';
+import { MfaChallengeResponse, VerifyMfaDto } from './dto/mfa.dto';
+import {
+  ResendVerificationDto,
+  VerifyEmailDto,
+} from './dto/verify-email.dto';
 import {
   CurrentUserResponse,
   RefreshedResponse,
@@ -50,6 +57,8 @@ import type { AccessTokenPayload } from './token.service';
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
+    private readonly verification: EmailVerificationService,
+    private readonly mfa: MfaService,
     private readonly tokens: TokenService,
     private readonly cookies: CookieService,
   ) {}
@@ -78,6 +87,50 @@ export class AuthController {
   }
 
   /**
+   * Confirme une adresse à partir du jeton reçu par courriel.
+   *
+   * Publique, et c'est nécessaire : on ne peut pas être connecté puisque la
+   * connexion est justement refusée tant que l'adresse n'est pas confirmée.
+   */
+  @Public()
+  @ApiOperation({ summary: 'Confirmer son adresse' })
+  @ApiResponse({ status: 204, description: 'Adresse confirmée.' })
+  @ApiResponse({
+    status: 400,
+    description:
+      '`VERIFICATION_TOKEN_INVALID` — lien inconnu, expiré ou déjà utilisé. Les trois cas donnent la même réponse.',
+    type: ApiErrorResponse,
+  })
+  // Le jeton fait 32 octets aléatoires : il n'est pas devinable. La limite vise
+  // l'acharnement automatisé, pas la découverte d'un jeton.
+  @RateLimit({ limit: 20, windowSeconds: 300 })
+  @HttpCode(204)
+  @Post('verify-email')
+  async verifyEmail(@Body() body: VerifyEmailDto): Promise<void> {
+    await this.verification.confirmer(body.token);
+  }
+
+  /**
+   * Renvoie un lien de confirmation.
+   *
+   * Répond toujours `204`, même pour une adresse inconnue ou déjà confirmée :
+   * une réponse différenciée dirait qui est inscrit.
+   */
+  @Public()
+  @ApiOperation({ summary: 'Renvoyer le lien de confirmation' })
+  @ApiResponse({
+    status: 204,
+    description:
+      'Demande enregistrée. La réponse est identique que le compte existe ou non.',
+  })
+  @RateLimit({ limit: 5, windowSeconds: 3600 })
+  @HttpCode(204)
+  @Post('resend-verification')
+  async resendVerification(@Body() body: ResendVerificationDto): Promise<void> {
+    await this.verification.renvoyer(body.email);
+  }
+
+  /**
    * Vérifie les identifiants et ouvre une session.
    *
    * Le message d'erreur est **identique** pour un email inconnu et pour un mot
@@ -91,11 +144,14 @@ export class AuthController {
   @RateLimit({ limit: 10, windowSeconds: 300 })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Se connecter',
+    summary: 'Se connecter (première étape)',
     description:
-      'Pose deux cookies `httpOnly` : `access_token` (15 min) et `refresh_token` (7 jours, limité au chemin `/api/auth`). Aucun jeton n\'est renvoyé dans le corps.',
+      'Vérifie les identifiants et envoie un code à six chiffres par courriel. **Aucune session n\'est ouverte à ce stade** : il faut valider le code sur `/api/auth/mfa/verify`.',
   })
-  @ApiOkResponse({ description: 'Session ouverte.', type: UserResponse })
+  @ApiOkResponse({
+    description: 'Identifiants acceptés, code envoyé.',
+    type: MfaChallengeResponse,
+  })
   @ApiResponse({
     status: 401,
     description:
@@ -103,20 +159,56 @@ export class AuthController {
     type: ApiErrorResponse,
   })
   @Post('login')
-  async login(
-    @Body() credentials: CredentialsDto,
-    @Res({ passthrough: true }) response: Response,
-  ): Promise<UserResponse> {
-    const result = await this.auth.login(
-      credentials.email,
-      credentials.password,
-    );
+  async login(@Body() credentials: CredentialsDto): Promise<MfaChallengeResponse> {
+    const defi = await this.auth.login(credentials.email, credentials.password);
 
-    if (!result) {
+    if (!defi) {
       throw new UnauthorizedException({
         error: 'INVALID_CREDENTIALS',
         message: 'Email ou mot de passe incorrect.',
       });
+    }
+
+    // Aucun cookie n'est posé ici : les identifiants seuls n'ouvrent plus de
+    // session. C'est la raison d'être du second facteur.
+    return { mfaRequired: true, challengeId: defi.challengeId };
+  }
+
+  /**
+   * Échange le code reçu par courriel contre une session.
+   *
+   * C'est ici, et seulement ici, que les cookies sont posés.
+   */
+  @Public()
+  // Six chiffres font un million de combinaisons. Ce qui rend l'énumération
+  // vaine, c'est la limite d'essais par défi — celle-ci ferme en plus la porte
+  // à qui ouvrirait des défis en série.
+  @RateLimit({ limit: 15, windowSeconds: 300 })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Valider le second facteur',
+    description:
+      'Vérifie le code à six chiffres reçu par courriel et ouvre la session. Cinq essais par défi, dix minutes de validité.',
+  })
+  @ApiOkResponse({ description: 'Session ouverte.', type: UserResponse })
+  @ApiResponse({
+    status: 401,
+    description:
+      '`MFA_CODE_INVALID` — code faux, défi expiré, déjà utilisé ou épuisé. Les quatre cas donnent la même réponse.',
+    type: ApiErrorResponse,
+  })
+  @Post('mfa/verify')
+  async verifyMfa(
+    @Body() body: VerifyMfaDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<UserResponse> {
+    const result = await this.auth.ouvrirSessionApresMfa(
+      body.challengeId,
+      body.code,
+    );
+
+    if (!result) {
+      this.mfa.refuser();
     }
 
     this.cookies.setSessionCookies(response, result);

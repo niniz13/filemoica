@@ -19,6 +19,13 @@ export default function ShareDownload({ token }: { token: string }) {
 
   const [downloadStates, setDownloadStates] = useState<Record<string, DownloadState>>({});
   const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
+  /**
+   * Message affiché quand le lien a cessé d'être exploitable **pendant** la
+   * visite : consommé par un usage unique, ou révoqué par le déposant.
+   *
+   * Distinct de `loadError`, qui couvre un lien déjà mort à l'arrivée.
+   */
+  const [linkDead, setLinkDead] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +57,25 @@ export default function ShareDownload({ token }: { token: string }) {
     }
   }
 
+  /**
+   * Le lien est-il encore exploitable ?
+   *
+   * On redemande au serveur plutôt que de le déduire : un lien à usage unique
+   * meurt au dernier fichier téléchargé, et cette page n'a aucun moyen de
+   * savoir seule que c'était le dernier. Le serveur, lui, le sait.
+   */
+  async function refreshLinkState() {
+    try {
+      setInfo(await api.shareInfo(token, unlockedPassword));
+    } catch (err) {
+      setLinkDead(
+        err instanceof ApiError
+          ? err.message
+          : "Ce lien n'est plus exploitable.",
+      );
+    }
+  }
+
   async function downloadFile(fileId: string, fileName: string) {
     setDownloadStates((prev) => ({ ...prev, [fileId]: "downloading" }));
     try {
@@ -62,6 +88,11 @@ export default function ShareDownload({ token }: { token: string }) {
         [fileId]: err instanceof ApiError ? err.message : "Échec du téléchargement.",
       }));
     }
+
+    // Après coup, qu'il ait réussi ou échoué : c'est le téléchargement qui
+    // vient peut-être de consumer le lien, et le refus suivant doit être une
+    // page claire plutôt qu'un bouton qui ne marche plus.
+    await refreshLinkState();
   }
 
   const needsPassword = info?.requiresPassword && !info.files;
@@ -99,14 +130,31 @@ export default function ShareDownload({ token }: { token: string }) {
           </>
         )}
 
-        {!loadError && !info && (
+        {!loadError && linkDead && (
+          <>
+            <h1 style={{ margin: "26px 0 0", font: `400 26px/1.2 ${sansFont}`, color: "#16181c" }}>
+              Lien épuisé
+            </h1>
+            <p style={{ marginTop: 12, font: `400 14px/1.5 ${sansFont}`, color: "#6b7178" }}>{linkDead}</p>
+            <p style={{ marginTop: 10, font: `400 14px/1.5 ${sansFont}`, color: "#6b7178" }}>
+              Les fichiers déjà téléchargés restent sur votre appareil. Pour les
+              obtenir de nouveau, demandez un nouveau lien à l&apos;expéditeur.
+            </p>
+          </>
+        )}
+
+        {!loadError && !linkDead && !info && (
           <p style={{ marginTop: 26, font: `400 14px/1.5 ${sansFont}`, color: "#6b7178" }}>Chargement…</p>
         )}
 
-        {!loadError && info && (
+        {!loadError && !linkDead && info && (
           <>
             <h1 style={{ margin: "26px 0 0", font: `400 26px/1.2 ${sansFont}`, color: "#16181c" }}>
-              {needsPassword ? "Fichiers protégés" : `${files.length} fichier${files.length > 1 ? "s" : ""}`}
+              {(() => {
+                if (needsPassword) return "Fichiers protégés";
+                if (files.length === 0) return "Lien sans objet";
+                return `${files.length} fichier${files.length > 1 ? "s" : ""}`;
+              })()}
             </h1>
             <p style={{ marginTop: 10, font: `400 14px/1.5 ${sansFont}`, color: "#6b7178" }}>
               Expire le {new Date(info.expiresAt).toLocaleString("fr-FR")}
@@ -149,11 +197,22 @@ export default function ShareDownload({ token }: { token: string }) {
               </>
             )}
 
-            {!needsPassword && (
+            {!needsPassword && files.length === 0 && (
+              <p style={{ marginTop: 22, font: `400 14px/1.5 ${sansFont}`, color: "#6b7178" }}>
+                Ce lien ne contient plus aucun fichier : l&apos;expéditeur les a
+                supprimés. Demandez-lui un nouveau lien.
+              </p>
+            )}
+
+            {!needsPassword && files.length > 0 && (
               <div style={{ marginTop: 22, display: "flex", flexDirection: "column", gap: 2 }}>
                 {files.map((f) => {
                   const tile = TILES[extFromName(f.fileName)] || FALLBACK_TILE;
                   const state = downloadStates[f.id] ?? "idle";
+                  // Sur un lien à usage unique, chaque fichier ne part qu'une
+                  // fois : reproposer le téléchargement ne mènerait qu'à un
+                  // refus du serveur.
+                  const epuise = Boolean(info?.singleUse) && state === "done";
                   return (
                     <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 0" }}>
                       <div
@@ -185,16 +244,32 @@ export default function ShareDownload({ token }: { token: string }) {
                           {f.fileName}
                         </div>
                         <div style={{ marginTop: 4, font: `400 13px/1.3 ${sansFont}`, color: "#6b7178" }}>
-                          {state === "error" ? downloadErrors[f.id] : fmtBytes(f.sizeBytes)}
+                          {state === "error"
+                            ? downloadErrors[f.id]
+                            : epuise
+                              ? "Déjà récupéré — ce lien ne le sert qu'une fois"
+                              : fmtBytes(f.sizeBytes)}
                         </div>
                       </div>
                       <button
                         onClick={() => downloadFile(f.id, f.fileName)}
-                        disabled={state === "downloading"}
+                        disabled={state === "downloading" || epuise}
                         className={state === "done" ? "ftc-btn-secondary" : "ftc-btn-primary"}
-                        style={{ padding: "10px 16px", borderRadius: 99, font: `500 13px/1 ${sansFont}`, flex: "none" }}
+                        style={{
+                          padding: "10px 16px",
+                          borderRadius: 99,
+                          font: `500 13px/1 ${sansFont}`,
+                          flex: "none",
+                          opacity: epuise ? 0.45 : 1,
+                          cursor: epuise ? "default" : undefined,
+                        }}
                       >
-                        {state === "downloading" ? "…" : state === "done" ? "Retélécharger" : "Télécharger"}
+                        {(() => {
+                          if (state === "downloading") return "…";
+                          if (epuise) return "Téléchargé";
+                          if (state === "done") return "Retélécharger";
+                          return "Télécharger";
+                        })()}
                       </button>
                     </div>
                   );

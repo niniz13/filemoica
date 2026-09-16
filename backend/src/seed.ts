@@ -95,11 +95,17 @@ async function main(): Promise<void> {
           passwordHash,
           role: account.role,
           plan: account.plan,
+          // Les comptes de démonstration sont créés déjà confirmés : ils
+          // n'ont pas de vraie boîte pour recevoir le lien.
+          emailVerifiedAt: new Date(),
         },
         update: {
           passwordHash,
           role: account.role,
           plan: account.plan,
+          // Les comptes de démonstration sont créés déjà confirmés : ils
+          // n'ont pas de vraie boîte pour recevoir le lien.
+          emailVerifiedAt: new Date(),
         },
       });
 

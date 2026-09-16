@@ -8,7 +8,7 @@ import { AppModule } from './../src/app.module';
 import { configureApp } from './../src/app.setup';
 import { RetentionService } from './../src/files/retention.service';
 import { PrismaService } from './../src/prisma/prisma.service';
-import { resetDatabase } from './database';
+import { confirmerAdresse, ouvrirSession, resetDatabase } from './database';
 
 const PASSWORD = 'phrase-de-passe-suffisamment-longue';
 const ALICE = 'alice@example.fr';
@@ -72,13 +72,10 @@ describe('Conservation des fichiers (e2e)', () => {
       .send({ email, password: PASSWORD })
       .expect(201);
 
-    const connexion = await request(app.getHttpServer())
-      .post('/api/auth/login')
-      .set(...CSRF)
-      .send({ email, password: PASSWORD })
-      .expect(200);
+      // La connexion est refusée tant que l'adresse n'est pas confirmée.
+      await confirmerAdresse(prisma, email);
 
-    return connexion.get('Set-Cookie') ?? [];
+    return ouvrirSession(app, prisma, email, PASSWORD);
   }
 
   /** Dépose un fichier et renvoie son identifiant. */

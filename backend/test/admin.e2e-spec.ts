@@ -5,7 +5,7 @@ import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { configureApp } from './../src/app.setup';
 import { PrismaService } from './../src/prisma/prisma.service';
-import { resetDatabase } from './database';
+import { confirmerAdresse, ouvrirSession, resetDatabase } from './database';
 
 const PASSWORD = 'phrase-de-passe-suffisamment-longue';
 const ADMIN = 'admin@example.fr';
@@ -57,14 +57,13 @@ describe('Administration (e2e)', () => {
       .send({ email, password: PASSWORD })
       .expect(201);
 
-    const connexion = await request(app.getHttpServer())
-      .post('/api/auth/login')
-      .set(...CSRF)
-      .send({ email, password: PASSWORD })
-      .expect(200);
+      // La connexion est refusée tant que l'adresse n'est pas confirmée.
+      await confirmerAdresse(prisma, email);
+
+    const cookiesSession = await ouvrirSession(app, prisma, email, PASSWORD);
 
     return {
-      cookies: connexion.get('Set-Cookie') ?? [],
+      cookies: cookiesSession,
       id: inscription.body.id,
     };
   }

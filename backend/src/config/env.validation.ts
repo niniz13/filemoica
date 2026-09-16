@@ -211,6 +211,41 @@ export class EnvironmentVariables {
   @IsUrl({ require_tld: false, protocols: ['http', 'https'] })
   FRONTEND_ORIGIN: string;
 
+  /**
+   * Clé d'API Brevo, pour l'envoi des courriels de vérification et des codes
+   * de double authentification.
+   *
+   * **Optionnelle hors production.** Sans elle, les courriels ne partent pas :
+   * leur contenu est écrit dans les journaux, ce qui permet de développer et de
+   * démontrer sans réseau. En production, son absence fait échouer le démarrage
+   * — voir {@link validateEnv} — car un code d'authentification imprimé dans
+   * les journaux n'est plus un secret.
+   */
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  BREVO_API_KEY?: string;
+
+  /**
+   * Adresse d'expédition. Elle doit être **validée dans Brevo**, sans quoi tous
+   * les envois sont refusés.
+   */
+  @IsString()
+  @MinLength(3)
+  MAIL_FROM_ADDRESS: string = 'no-reply@filemoica.local';
+
+  @IsString()
+  @MinLength(1)
+  MAIL_FROM_NAME: string = 'filemoica';
+
+  /**
+   * Adresse publique du front, utilisée pour construire les liens de
+   * vérification envoyés par courriel. Distincte de `FRONTEND_ORIGIN`, qui sert
+   * au contrôle d'accès : celle-ci finit dans un message lu par un humain.
+   */
+  @IsUrl({ require_tld: false, protocols: ['http', 'https'] })
+  APP_PUBLIC_URL: string = 'http://localhost:3001';
+
   /** Domaine des cookies. Absent en local, renseigné par SRC en production. */
   @IsOptional()
   @IsString()
@@ -286,6 +321,17 @@ export function validateEnv(
     whitelist: false,
     validationError: { value: false, target: false },
   });
+
+  // Un code de double authentification écrit dans les journaux n'est plus un
+  // secret : en production, l'envoi de courriels doit réellement fonctionner.
+  if (config.NODE_ENV === NodeEnv.Production && !config.BREVO_API_KEY) {
+    throw new Error(
+      'Configuration invalide, le service ne peut pas démarrer :\n' +
+        '  - BREVO_API_KEY : obligatoire en production.\n' +
+        "Sans clé, les courriels de vérification et les codes d'authentification " +
+        'seraient écrits dans les journaux au lieu d\'être envoyés.',
+    );
+  }
 
   if (errors.length > 0) {
     const details = errors

@@ -5,7 +5,13 @@ import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { configureApp } from './../src/app.setup';
 import { PrismaService } from './../src/prisma/prisma.service';
-import { resetDatabase } from './database';
+import { PasswordService } from './../src/auth/password.service';
+import {
+  CODE_DE_TEST,
+  confirmerAdresse,
+  ouvrirSession,
+  resetDatabase,
+} from './database';
 
 const EMAIL = 'alice@example.fr';
 const PASSWORD = 'phrase-de-passe-suffisamment-longue';
@@ -58,13 +64,12 @@ describe('Authentification (e2e)', () => {
       .send({ email, password })
       .expect(201);
 
-    const response = await request(app.getHttpServer())
-      .post('/api/auth/login')
-      .set(...CSRF)
-      .send({ email, password })
-      .expect(200);
+    // La connexion est refusée tant que l'adresse n'est pas confirmée. Le
+    // parcours de confirmation a ses propres tests, plus bas, avec un vrai
+    // jeton : ici on veut seulement une session.
+    await confirmerAdresse(prisma, email);
 
-    return response.get('Set-Cookie') ?? [];
+    return ouvrirSession(app, prisma, email, password);
   }
 
   describe('Inscription', () => {
@@ -151,6 +156,137 @@ describe('Authentification (e2e)', () => {
     });
   });
 
+  describe('Confirmation de l\'adresse', () => {
+    /** Inscrit un compte et renvoie le jeton réellement émis. */
+    async function inscrireEtRecupererLeJeton(): Promise<string> {
+      await request(app.getHttpServer())
+        .post('/api/auth/register')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(201);
+
+      // Le jeton en clair n'existe que dans le courriel : on relit donc celui
+      // qui a été émis pour le compte, le seul moyen de jouer le parcours sans
+      // dépendre d'un envoi réel.
+      const emis = await prisma.emailVerification.findFirst({
+        where: { user: { email: EMAIL } },
+        orderBy: { createdAt: 'desc' },
+        select: { tokenHash: true },
+      });
+
+      expect(emis).not.toBeNull();
+      return emis!.tokenHash;
+    }
+
+    it('crée le compte avec une adresse non confirmée', async () => {
+      await request(app.getHttpServer())
+        .post('/api/auth/register')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(201);
+
+      const compte = await prisma.user.findUnique({ where: { email: EMAIL } });
+      expect(compte?.emailVerifiedAt).toBeNull();
+    });
+
+    it('émet un jeton de confirmation, jamais stocké en clair', async () => {
+      const empreinte = await inscrireEtRecupererLeJeton();
+
+      expect(empreinte).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    // Le cœur du choix : le compte existe, le mot de passe est bon, et la
+    // connexion est refusée quand même.
+    it('refuse la connexion tant que l\'adresse n\'est pas confirmée', async () => {
+      await request(app.getHttpServer())
+        .post('/api/auth/register')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(201);
+
+      const response = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(403);
+
+      expect(response.body.error).toBe('EMAIL_NOT_VERIFIED');
+    });
+
+    it('laisse passer une fois l\'adresse confirmée', async () => {
+      await request(app.getHttpServer())
+        .post('/api/auth/register')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(201);
+
+      await confirmerAdresse(prisma, EMAIL);
+
+      await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(200);
+    });
+
+    it.each([
+      ['un jeton inconnu', 'jeton-qui-nexiste-pas-du-tout'],
+      ['un jeton trop court', 'court'],
+    ])('refuse %s', async (_cas, token) => {
+      await request(app.getHttpServer())
+        .post('/api/auth/verify-email')
+        .set(...CSRF)
+        .send({ token })
+        .expect((res) => {
+          // 400 dans les deux cas : jeton invalide ou refusé par la validation.
+          expect(res.status).toBe(400);
+        });
+    });
+
+    // Répondre différemment selon que l'adresse existe transformerait cette
+    // route en annuaire des comptes du service.
+    it('répond pareil qu\'on renvoie vers un compte existant ou non', async () => {
+      await request(app.getHttpServer())
+        .post('/api/auth/register')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(201);
+
+      const connu = await request(app.getHttpServer())
+        .post('/api/auth/resend-verification')
+        .set(...CSRF)
+        .send({ email: EMAIL });
+
+      const inconnu = await request(app.getHttpServer())
+        .post('/api/auth/resend-verification')
+        .set(...CSRF)
+        .send({ email: 'personne@example.fr' });
+
+      expect(connu.status).toBe(204);
+      expect(inconnu.status).toBe(204);
+      expect(connu.body).toEqual(inconnu.body);
+    });
+
+    // Un lien transmis par erreur ne doit pas rester exploitable après qu'on
+    // en a demandé un neuf.
+    it('invalide le lien précédent quand on en redemande un', async () => {
+      const premier = await inscrireEtRecupererLeJeton();
+
+      await request(app.getHttpServer())
+        .post('/api/auth/resend-verification')
+        .set(...CSRF)
+        .send({ email: EMAIL })
+        .expect(204);
+
+      const ancien = await prisma.emailVerification.findUnique({
+        where: { tokenHash: premier },
+        select: { consumedAt: true },
+      });
+
+      expect(ancien?.consumedAt).not.toBeNull();
+    });
+  });
+
   describe('Connexion', () => {
     it('pose deux cookies httpOnly et ne renvoie aucun jeton dans le corps', async () => {
       const cookies = await connecter();
@@ -187,6 +323,169 @@ describe('Authentification (e2e)', () => {
         error: 'INVALID_CREDENTIALS',
         message: 'Email ou mot de passe incorrect.',
       });
+    });
+  });
+
+  describe('Double authentification', () => {
+    /** Inscrit, confirme, puis lance une connexion. Renvoie le défi émis. */
+    async function amorcerUneConnexion(): Promise<string> {
+      await request(app.getHttpServer())
+        .post('/api/auth/register')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(201);
+
+      await confirmerAdresse(prisma, EMAIL);
+
+      const defi = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(200);
+
+      return defi.body.challengeId as string;
+    }
+
+    /** Impose un code connu au défi, faute de pouvoir lire le courriel. */
+    async function imposerLeCode(challengeId: string, code: string) {
+      await prisma.mfaChallenge.update({
+        where: { id: challengeId },
+        data: { codeHash: await new PasswordService().hash(code) },
+      });
+    }
+
+    // Le cœur du second facteur : le mot de passe ne suffit plus.
+    it('n\'ouvre aucune session à la première étape', async () => {
+      await request(app.getHttpServer())
+        .post('/api/auth/register')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(201);
+      await confirmerAdresse(prisma, EMAIL);
+
+      const reponse = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(200);
+
+      expect(reponse.body.mfaRequired).toBe(true);
+      expect(reponse.body.challengeId).toEqual(expect.any(String));
+      // Aucun cookie : c'est ce qui distingue cette étape d'une connexion.
+      expect(reponse.get('Set-Cookie')).toBeUndefined();
+    });
+
+    it('ne stocke jamais le code en clair', async () => {
+      const challengeId = await amorcerUneConnexion();
+
+      const defi = await prisma.mfaChallenge.findUniqueOrThrow({
+        where: { id: challengeId },
+        select: { codeHash: true },
+      });
+
+      expect(defi.codeHash).toMatch(/^\$argon2id\$/);
+      expect(defi.codeHash).not.toMatch(/\d{6}/);
+    });
+
+    it('ouvre la session avec le bon code', async () => {
+      const challengeId = await amorcerUneConnexion();
+      await imposerLeCode(challengeId, CODE_DE_TEST);
+
+      const session = await request(app.getHttpServer())
+        .post('/api/auth/mfa/verify')
+        .set(...CSRF)
+        .send({ challengeId, code: CODE_DE_TEST })
+        .expect(200);
+
+      const cookies = session.get('Set-Cookie') ?? [];
+      expect(cookies.some((c) => c.startsWith('access_token='))).toBe(true);
+    });
+
+    it('refuse un code faux', async () => {
+      const challengeId = await amorcerUneConnexion();
+      await imposerLeCode(challengeId, CODE_DE_TEST);
+
+      const reponse = await request(app.getHttpServer())
+        .post('/api/auth/mfa/verify')
+        .set(...CSRF)
+        .send({ challengeId, code: '000000' })
+        .expect(401);
+
+      expect(reponse.body.error).toBe('MFA_CODE_INVALID');
+    });
+
+    // Ce qui rend six chiffres suffisants : ce n'est pas la longueur du code,
+    // c'est le nombre d'essais.
+    it('abandonne le défi après cinq essais infructueux', async () => {
+      const challengeId = await amorcerUneConnexion();
+      await imposerLeCode(challengeId, CODE_DE_TEST);
+
+      for (let i = 0; i < 5; i += 1) {
+        await request(app.getHttpServer())
+          .post('/api/auth/mfa/verify')
+          .set(...CSRF)
+          .send({ challengeId, code: '000000' })
+          .expect(401);
+      }
+
+      // Même le bon code ne passe plus : le défi est clos.
+      await request(app.getHttpServer())
+        .post('/api/auth/mfa/verify')
+        .set(...CSRF)
+        .send({ challengeId, code: CODE_DE_TEST })
+        .expect(401);
+    });
+
+    it('ne laisse pas rejouer un défi déjà utilisé', async () => {
+      const challengeId = await amorcerUneConnexion();
+      await imposerLeCode(challengeId, CODE_DE_TEST);
+
+      await request(app.getHttpServer())
+        .post('/api/auth/mfa/verify')
+        .set(...CSRF)
+        .send({ challengeId, code: CODE_DE_TEST })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post('/api/auth/mfa/verify')
+        .set(...CSRF)
+        .send({ challengeId, code: CODE_DE_TEST })
+        .expect(401);
+    });
+
+    it('refuse un défi expiré', async () => {
+      const challengeId = await amorcerUneConnexion();
+      await imposerLeCode(challengeId, CODE_DE_TEST);
+
+      await prisma.mfaChallenge.update({
+        where: { id: challengeId },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+
+      await request(app.getHttpServer())
+        .post('/api/auth/mfa/verify')
+        .set(...CSRF)
+        .send({ challengeId, code: CODE_DE_TEST })
+        .expect(401);
+    });
+
+    // Une seconde tentative de connexion doit invalider le code précédent,
+    // sinon deux codes valides coexistent pour un même compte.
+    it('invalide le défi précédent quand on relance une connexion', async () => {
+      const premier = await amorcerUneConnexion();
+      await imposerLeCode(premier, CODE_DE_TEST);
+
+      await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post('/api/auth/mfa/verify')
+        .set(...CSRF)
+        .send({ challengeId: premier, code: CODE_DE_TEST })
+        .expect(401);
     });
   });
 
