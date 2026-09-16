@@ -1,4 +1,4 @@
-import { plainToInstance, Transform } from 'class-transformer';
+import { plainToInstance } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
@@ -34,6 +34,42 @@ const HEX_32_BYTES = /^[0-9a-fA-F]{64}$/;
 
 /** Durée façon `jsonwebtoken` : `15m`, `7d`, `3600s`... */
 const DURATION = /^\d+[smhd]$/;
+
+/**
+ * Variables à interpréter comme des booléens.
+ *
+ * Elles sont converties **avant** la validation, et non par un décorateur de
+ * transformation. La conversion automatique de types appliquerait sinon
+ * `Boolean("false")`, qui vaut… `true` — toute chaîne non vide étant vraie.
+ * Une variable mise à `false` serait donc restée active, et l'erreur ne se
+ * verrait qu'en production, au pire moment.
+ */
+const BOOLEAN_KEYS = ['ENABLE_API_DOCS', 'RATE_LIMIT_ENABLED'] as const;
+
+/** Valeurs textuelles considérées comme fausses. */
+const FALSY = new Set(['false', '0', 'no', 'non', '']);
+
+/**
+ * Convertit les variables booléennes avant validation.
+ *
+ * Absentes, elles sont laissées telles quelles pour que la valeur par défaut
+ * déclarée dans la classe s'applique.
+ */
+function normalizeBooleans(
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized = { ...raw };
+
+  for (const key of BOOLEAN_KEYS) {
+    const value = normalized[key];
+
+    if (typeof value === 'string') {
+      normalized[key] = !FALSY.has(value.trim().toLowerCase());
+    }
+  }
+
+  return normalized;
+}
 
 /**
  * Contrat de configuration du service.
@@ -160,6 +196,35 @@ export class EnvironmentVariables {
   COOKIE_DOMAIN?: string;
 
   /**
+   * Active la limitation de tentatives sur les routes sensibles.
+   *
+   * Vraie par défaut. Désactivée dans la suite de tests, qui crée des dizaines
+   * de comptes d'affilée depuis la même adresse et heurterait la limite sans
+   * rien démontrer — le comportement du garde est vérifié par ses propres
+   * tests unitaires.
+   */
+  @IsBoolean()
+  RATE_LIMIT_ENABLED: boolean = true;
+
+  /**
+   * Nombre de relais de confiance devant le service.
+   *
+   * L'application tourne derrière le reverse proxy de l'infrastructure : sans ce
+   * réglage, **toutes** les requêtes sembleraient venir de l'adresse du proxy,
+   * et la limitation de débit bloquerait tout le monde d'un coup dès qu'un seul
+   * visiteur s'agite.
+   *
+   * La valeur compte les relais à traverser pour retrouver l'adresse réelle.
+   * Elle reste à zéro en développement — faire confiance à un en-tête
+   * `X-Forwarded-For` quand personne ne le réécrit permettrait à n'importe qui
+   * de se faire passer pour n'importe quelle adresse.
+   */
+  @IsInt()
+  @Min(0)
+  @Max(5)
+  TRUST_PROXY_HOPS: number = 0;
+
+  /**
    * Expose la documentation interactive sur `/api/docs`.
    *
    * Activée par défaut : elle sert au front pendant le développement et au jury
@@ -168,11 +233,8 @@ export class EnvironmentVariables {
    * intégrateur que le repérage d'un attaquant. La couper reste donc possible
    * en production, sans toucher au code.
    *
-   * La conversion est explicite : la conversion automatique transformerait la
-   * chaîne `"false"` en booléen `true`, puisque toute chaîne non vide est
-   * considérée comme vraie.
+   * Voir {@link BOOLEAN_KEYS} pour la conversion de la valeur textuelle.
    */
-  @Transform(({ value }) => value === true || value === 'true' || value === '1')
   @IsBoolean()
   ENABLE_API_DOCS: boolean = true;
 }
@@ -193,7 +255,7 @@ export class EnvironmentVariables {
 export function validateEnv(
   raw: Record<string, unknown>,
 ): EnvironmentVariables {
-  const config = plainToInstance(EnvironmentVariables, raw, {
+  const config = plainToInstance(EnvironmentVariables, normalizeBooleans(raw), {
     enableImplicitConversion: true,
     exposeDefaultValues: true,
   });

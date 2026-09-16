@@ -67,6 +67,47 @@ describe('validateEnv', () => {
     );
   });
 
+  // Le piège : la conversion automatique de types appliquerait
+  // `Boolean("false")`, qui vaut `true`. Une variable mise à `false` serait
+  // restée active, et personne ne s'en serait aperçu avant la production.
+  describe('Variables booléennes', () => {
+    it.each([
+      ['false', false],
+      ['FALSE', false],
+      ['0', false],
+      ['no', false],
+      ['non', false],
+      ['true', true],
+      ['1', true],
+      ['oui', true],
+    ])('interprète « %s » comme %s', (valeur, attendu) => {
+      const config = validateEnv({
+        ...validEnv(),
+        RATE_LIMIT_ENABLED: valeur,
+        ENABLE_API_DOCS: valeur,
+      });
+
+      expect(config.RATE_LIMIT_ENABLED).toBe(attendu);
+      expect(config.ENABLE_API_DOCS).toBe(attendu);
+    });
+
+    it('active la limitation et la documentation par défaut', () => {
+      const config = validateEnv(validEnv());
+
+      expect(config.RATE_LIMIT_ENABLED).toBe(true);
+      expect(config.ENABLE_API_DOCS).toBe(true);
+    });
+
+    it('renvoie un vrai booléen, pas une chaîne', () => {
+      const config = validateEnv({
+        ...validEnv(),
+        RATE_LIMIT_ENABLED: 'false',
+      });
+
+      expect(typeof config.RATE_LIMIT_ENABLED).toBe('boolean');
+    });
+  });
+
   it('accepte une clé de rotation optionnelle', () => {
     const config = validateEnv({
       ...validEnv(),

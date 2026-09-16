@@ -24,6 +24,7 @@ qu'on ne confonde jamais l'intention et le code qui tourne.
 - [Authentification](#authentification)
 - [Fichiers](#fichiers)
 - [Partages et téléchargement](#partages-et-téléchargement)
+- [Exploitation](#exploitation)
 - [Modèle de données](#modèle-de-données)
 - [Supervision et incident](#supervision-et-incident)
 - [Contrats avec le reste de l'équipe](#contrats-avec-le-reste-de-léquipe)
@@ -176,6 +177,7 @@ npx tsc --noEmit         # vérification de types
 | `npm run db:deploy` | Applique les migrations sans en créer (production) |
 | `npm run db:studio` | Interface de consultation de la base |
 | `npm run keys:rotate` | Bascule les données vers la nouvelle clé maître (`-- --dry-run` pour simuler) |
+| `npm run tokens:purge` | Supprime les jetons expirés |
 
 ---
 
@@ -192,8 +194,10 @@ npx tsc --noEmit         # vérification de types
 | Dépôt, liste et suppression de fichiers | ✅ implémenté et testé |
 | Quota mensuel et offres | ✅ implémenté et testé |
 | Partages, révocation et téléchargement | ✅ implémenté et testé |
+| Rotation des clés de chiffrement | ✅ implémenté et testé |
+| Journaux, limitation de tentatives, purge | ✅ implémenté et testé |
 
-**229 tests au vert** (100 unitaires, 129 end-to-end), analyse statique et
+**257 tests au vert** (128 unitaires, 129 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 **Le parcours utilisateur est complet** : déposer, partager, télécharger,
@@ -804,6 +808,81 @@ que ce seul jeton.
 
 ---
 
+## Exploitation
+
+### Journaux
+
+Une ligne par requête, en **JSON** hors développement — directement exploitable
+par une centralisation de logs, sans expression d'extraction à écrire :
+
+```json
+{"level":"log","context":"HTTP","message":{"requestId":"f32cd5c1-…","method":"GET","path":"/api/download/:token","status":404,"durationMs":95.42}}
+```
+
+**Ce qu'une ligne ne contient jamais** : ni corps de requête, ni en-têtes, ni
+jeton. Le corps contiendrait les mots de passe à l'inscription ; les en-têtes
+contiendraient les cookies de session et les mots de passe de liens.
+
+**Les jetons de partage sont masqués** avant écriture : `/api/download/k3Jv8Qw2…`
+devient `/api/download/:token`. Depuis que le destinataire n'a plus besoin de
+compte, ce jeton suffit à accéder au fichier — le journaliser reviendrait à
+recopier tous les liens du service dans un fichier souvent centralisé, conservé
+longtemps, et lisible par quiconque a accès à la supervision.
+
+> Le masquage est une **fonction partagée**, pas une précaution dupliquée. La
+> première version le faisait dans le journal de requêtes seulement, tandis que
+> le filtre d'exceptions écrivait l'URL brute de son côté : le secret fuyait
+> donc par l'endroit auquel on ne pensait pas. Vérifié depuis en conditions
+> réelles.
+
+Chaque réponse porte un `X-Request-Id`. Un utilisateur qui signale une erreur
+peut le communiquer, et on retrouve la requête exacte sans fouiller par
+horodatage.
+
+### Limitation des tentatives
+
+| Route | Limite | Ce qu'elle protège |
+|---|---|---|
+| `POST /api/auth/login` | 10 / 5 min | Le mot de passe d'un compte |
+| `POST /api/auth/register` | 10 / heure | La création de comptes en masse |
+| `GET /api/download/:token` | 20 / 5 min | Le mot de passe d'un lien |
+
+Elle vise les secrets **choisis par un humain**, donc devinables. Le jeton d'un
+lien, lui, fait 32 octets aléatoires : le deviner est hors de portée, et il n'a
+pas besoin de cette protection.
+
+Un dépassement répond `429 TOO_MANY_ATTEMPTS` avec un en-tête `Retry-After`.
+
+**Complémentaire du reverse proxy, pas redondante** : le proxy limite le volume
+brut par adresse et protège la disponibilité ; ce garde compte les tentatives
+sur une route précise et protège les mots de passe.
+
+> **Limite assumée** — le compteur est en mémoire. Avec plusieurs instances,
+> chacune compterait de son côté et la limite effective serait multipliée par
+> leur nombre. Cohérent avec le choix d'une instance unique ; à revoir si cela
+> change.
+>
+> **`TRUST_PROXY_HOPS` doit être réglé par SRC.** Derrière un reverse proxy sans
+> ce réglage, toutes les requêtes semblent venir de l'adresse du proxy — et la
+> limitation bloquerait tout le monde d'un coup dès qu'un seul visiteur s'agite.
+
+### Purge des jetons expirés
+
+```bash
+npm run tokens:purge
+```
+
+À planifier une fois par jour. **Sans risque** : ces lignes ne protègent plus
+rien une fois la date passée — un jeton expiré est de toute façon refusé par la
+vérification de signature. La manquer un jour n'ouvre aucun accès, cela laisse
+seulement quelques lignes de plus en base.
+
+```cron
+0 4 * * * cd /srv/filemoica && npm run tokens:purge
+```
+
+---
+
 ## Supervision et incident
 
 `GET /health` — volontairement **hors du préfixe `/api`** et sans
@@ -856,8 +935,11 @@ le tableau de tests.
 | Sonde | `GET /health` — 200 sain, 503 dégradé |
 | Secrets à fournir | `JWT_SECRET`, `ENCRYPTION_KEY_V1`, `HMAC_INDEX_KEY`, `DATABASE_URL` |
 | Sauvegarde | **Deux artefacts indissociables** : `pg_dump` (les clés chiffrées) **et** le contenu de `STORAGE_PATH` (les fichiers chiffrés). Restaurer l'un sans l'autre ne donne rien d'exploitable |
-| Purge | Les jetons expirés sont à purger périodiquement (script à venir) |
+| Purge | `npm run tokens:purge` à planifier une fois par jour |
+| **`TRUST_PROXY_HOPS`** | **À régler** selon le nombre de relais devant le service. Sans cela, la limitation de tentatives bloque tout le monde d'un coup |
+| Journaux | JSON, une ligne par requête, sur la sortie standard |
 | `ENABLE_API_DOCS` | Expose `/api/docs`. À `true` par défaut ; peut être coupé en production pour réduire ce qu'un attaquant apprend de la surface de l'API |
+| Rotation des clés | `npm run keys:rotate` quand une clé doit être changée |
 
 ### Pour le front (IW 1)
 
@@ -964,6 +1046,9 @@ Les tests les plus significatifs pour l'évaluation :
 | Un formulaire posté depuis un site tiers est bloqué | `csrf.guard.spec.ts` |
 | La sonde bascule en 503 quand la base tombe | `health.e2e-spec.ts` |
 | Un secret mal formé ne fuite pas dans les logs | `env.validation.spec.ts` |
+| Un jeton de partage n'apparaît jamais dans les journaux | `request-logger.middleware.spec.ts` · `all-exceptions.filter.spec.ts` |
+| Les tentatives répétées sont bloquées par adresse | `rate-limit.guard.spec.ts` |
+| Une variable à `false` est bien interprétée comme fausse | `env.validation.spec.ts` |
 | Un fichier déposé est illisible sur le disque | `files.e2e-spec.ts` |
 | …et reste pourtant récupérable avec sa clé | `files.e2e-spec.ts` |
 | Un utilisateur ne voit pas les fichiers d'un autre | `files.e2e-spec.ts` |
@@ -1007,6 +1092,6 @@ besoin apparaissait.
 
 | Lot | Contenu |
 |---|---|
-| Journalisation | Logs structurés pour la centralisation |
-| Purge | Commande de nettoyage des jetons expirés, pour le cron de SRC |
-| Limitation de débit | Ralentir les tentatives répétées sur la connexion |
+| Sauvegarde et restauration | À jouer et chronométrer avec SRC — procédure déjà écrite dans [le document de décision](../docs/decision-stockage-fichiers.md) |
+| Conteneurisation | Dockerfile de l'application — **à répartir avec SRC** |
+| Rétention des fichiers | Aucun nettoyage automatique des fichiers dont tous les partages ont expiré. Politique à décider ensemble |
