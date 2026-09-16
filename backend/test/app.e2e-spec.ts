@@ -4,6 +4,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { configureApp } from './../src/app.setup';
+import { Public } from './../src/auth/decorators';
 import { PrismaService } from './../src/prisma/prisma.service';
 
 /**
@@ -14,6 +15,7 @@ import { PrismaService } from './../src/prisma/prisma.service';
  * protection CSRF demande donc une vraie route qui modifie l'état — sans pour
  * autant ajouter une route factice au code de production.
  */
+@Public()
 @Controller('socle-test')
 class SocleTestController {
   @Get()
