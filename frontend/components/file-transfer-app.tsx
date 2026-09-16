@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ApiError, api, type CurrentUser, type FileItem, type Quota } from "@/lib/api";
+import ShareQrCode from "@/components/share-qr-code";
 import {
   FALLBACK_TILE,
   TILES,
@@ -23,12 +24,23 @@ type AuthMode = "login" | "register";
 
 interface UploadItem {
   id: string;
+  fileId?: string;
   name: string;
   sizeBytes: number;
   progress: number;
   status: "uploading" | "done" | "error";
   error?: string;
 }
+
+/** Un lien de partage créé pour toute une sélection de fichiers de la session. */
+interface SessionShare {
+  id: string;
+  url: string;
+  fileNames: string[];
+}
+
+/** Durée de validité par défaut d'un lien de partage. */
+const DEFAULT_SHARE_HOURS = 72;
 
 const NAV: { id: Screen; label: string }[] = [
   { id: "drop", label: "Envoyer" },
@@ -54,6 +66,11 @@ export default function FileTransferApp() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [uploads, setUploads] = useState<UploadItem[]>([]);
+  const [sessionShares, setSessionShares] = useState<SessionShare[]>([]);
+  const [claimedFileIds, setClaimedFileIds] = useState<Set<string>>(new Set());
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [copiedShareId, setCopiedShareId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
   const [narrow, setNarrow] = useState(false);
@@ -179,6 +196,9 @@ export default function FileTransferApp() {
     setQuota(null);
     setFiles([]);
     setUploads([]);
+    setSessionShares([]);
+    setClaimedFileIds(new Set());
+    setShareError(null);
     setEmail("");
     setPassword("");
     setAuthMode("login");
@@ -197,7 +217,9 @@ export default function FileTransferApp() {
         setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, progress: fraction } : u)));
       })
       .then((uploaded) => {
-        setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, progress: 1, status: "done" } : u)));
+        setUploads((prev) =>
+          prev.map((u) => (u.id === id ? { ...u, fileId: uploaded.id, progress: 1, status: "done" } : u)),
+        );
         setFiles((prev) => [uploaded, ...prev]);
         void refreshQuota();
       })
@@ -233,6 +255,44 @@ export default function FileTransferApp() {
     }
   }
 
+  function copyShareLink(shareId: string, url: string) {
+    setCopiedShareId(shareId);
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(url).catch(() => {});
+    }
+    setTimeout(() => setCopiedShareId((current) => (current === shareId ? null : current)), 2000);
+  }
+
+  async function createShareLink() {
+    const pending = uploads.filter(
+      (u) => u.status === "done" && u.fileId && !claimedFileIds.has(u.fileId),
+    );
+    if (pending.length === 0) return;
+
+    setShareBusy(true);
+    setShareError(null);
+    try {
+      const share = await api.createShare({
+        fileIds: pending.map((u) => u.fileId!),
+        expiresInHours: DEFAULT_SHARE_HOURS,
+      });
+      const url = `${window.location.origin}/d/${share.token}`;
+      setSessionShares((prev) => [
+        { id: share.id, url, fileNames: share.files.map((f) => f.fileName) },
+        ...prev,
+      ]);
+      setClaimedFileIds((prev) => {
+        const next = new Set(prev);
+        for (const u of pending) next.add(u.fileId!);
+        return next;
+      });
+    } catch (err) {
+      setShareError(err instanceof ApiError ? err.message : "Échec de la création du lien.");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
     setIsDragging(false);
@@ -251,6 +311,10 @@ export default function FileTransferApp() {
   const isFiles = screen === "files";
   const isAccount = screen === "account";
   const wide = !narrow;
+
+  const pendingShareCount = uploads.filter(
+    (u) => u.status === "done" && u.fileId && !claimedFileIds.has(u.fileId),
+  ).length;
 
   const level = live.level;
   const topInk = level > 0.82 ? "#ffffff" : "#16181c";
@@ -607,9 +671,84 @@ export default function FileTransferApp() {
                   </div>
 
                   <div style={{ flex: "1 1 340px", minWidth: 290, display: "flex", flexDirection: "column", minHeight: 0, background: "#ffffff", padding: "0 26px 26px" }}>
-                    <div style={{ padding: "6px 6px 14px", font: `400 14px/1 ${sansFont}`, color: "#6b7178" }}>
-                      {uploads.length === 0 ? "Aucun envoi pour l'instant" : `${uploads.length} envoi${uploads.length > 1 ? "s" : ""} cette session`}
+                    <div style={{ padding: "6px 6px 14px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                      <div style={{ flex: 1, font: `400 14px/1 ${sansFont}`, color: "#6b7178" }}>
+                        {uploads.length === 0 ? "Aucun envoi pour l'instant" : `${uploads.length} envoi${uploads.length > 1 ? "s" : ""} cette session`}
+                      </div>
+                      {uploads.length > 0 && (
+                        <button
+                          onClick={createShareLink}
+                          disabled={pendingShareCount === 0 || shareBusy}
+                          className="ftc-btn-primary"
+                          style={{
+                            padding: "9px 16px",
+                            borderRadius: 99,
+                            font: `500 13px/1 ${sansFont}`,
+                            flex: "none",
+                            opacity: pendingShareCount === 0 || shareBusy ? 0.5 : 1,
+                          }}
+                        >
+                          {shareBusy
+                            ? "Création…"
+                            : pendingShareCount > 0
+                              ? `Créer un lien de partage${pendingShareCount > 1 ? ` (${pendingShareCount})` : ""}`
+                              : sessionShares.length > 0
+                                ? "Lien de partage créé"
+                                : "Créer un lien de partage"}
+                        </button>
+                      )}
                     </div>
+
+                    {shareError && (
+                      <div style={{ padding: "0 6px 12px", font: `400 13px/1.4 ${sansFont}`, color: "#d2493c" }}>
+                        {shareError}
+                      </div>
+                    )}
+
+                    {sessionShares.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "0 6px 16px" }}>
+                        {sessionShares.map((share) => (
+                          <div
+                            key={share.id}
+                            style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, borderRadius: 14, background: "#f6f4f0" }}
+                          >
+                            <ShareQrCode url={share.url} size={44} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div
+                                style={{
+                                  font: `400 13px/1.5 var(--font-ibm-plex-mono), monospace`,
+                                  color: "#16181c",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {share.url}
+                              </div>
+                              <div
+                                style={{
+                                  marginTop: 4,
+                                  font: `400 12.5px/1.4 ${sansFont}`,
+                                  color: "#6b7178",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {share.fileNames.length} fichier{share.fileNames.length > 1 ? "s" : ""} · {share.fileNames.join(", ")}
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => copyShareLink(share.id, share.url)}
+                              className="ftc-btn-secondary"
+                              style={{ padding: "8px 14px", borderRadius: 99, font: `400 13px/1 ${sansFont}`, flex: "none" }}
+                            >
+                              {copiedShareId === share.id ? "Copié" : "Copier le lien"}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: 2, minHeight: 130 }}>
                       {uploads.map((u) => {
@@ -622,33 +761,35 @@ export default function FileTransferApp() {
                               : `${Math.round(u.progress * 100)}%`;
                         const statusColor = u.status === "done" ? "#0b6b45" : u.status === "error" ? "#d2493c" : "#5b4bff";
                         return (
-                          <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 6px" }}>
-                            <div
-                              style={{
-                                width: 36,
-                                height: 36,
-                                flex: "none",
-                                borderRadius: 11,
-                                background: tile[0],
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                font: `500 10.5px/1 ${sansFont}`,
-                                color: tile[1],
-                              }}
-                            >
-                              {extFromName(u.name)}
-                            </div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ font: `400 15px/1.25 ${sansFont}`, color: "#16181c", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {u.name}
+                          <div key={u.id} style={{ padding: "12px 6px", borderBottom: "1px solid rgba(22,24,28,.06)" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                              <div
+                                style={{
+                                  width: 36,
+                                  height: 36,
+                                  flex: "none",
+                                  borderRadius: 11,
+                                  background: tile[0],
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  font: `500 10.5px/1 ${sansFont}`,
+                                  color: tile[1],
+                                }}
+                              >
+                                {extFromName(u.name)}
                               </div>
-                              <div style={{ marginTop: 4, font: `400 13px/1.3 ${sansFont}`, color: "#6b7178" }}>
-                                {fmtBytes(u.sizeBytes)}
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ font: `400 15px/1.25 ${sansFont}`, color: "#16181c", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {u.name}
+                                </div>
+                                <div style={{ marginTop: 4, font: `400 13px/1.3 ${sansFont}`, color: "#6b7178" }}>
+                                  {fmtBytes(u.sizeBytes)}
+                                </div>
                               </div>
-                            </div>
-                            <div style={{ font: `400 13px/1 ${sansFont}`, color: statusColor, textAlign: "right", flex: "none", maxWidth: 140 }}>
-                              {status}
+                              <div style={{ font: `400 13px/1 ${sansFont}`, color: statusColor, textAlign: "right", flex: "none", maxWidth: 140 }}>
+                                {status}
+                              </div>
                             </div>
                           </div>
                         );

@@ -3,16 +3,28 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 /** État courant d'un partage. */
 export type ShareStatus = 'ACTIVE' | 'EXPIRED' | 'REVOKED';
 
+/** Un fichier tel qu'il apparaît dans un partage. */
+export class SharedFileResponse {
+  @ApiProperty({ format: 'uuid' })
+  id: string;
+
+  @ApiProperty({ example: 'rapport-annuel.pdf' })
+  fileName: string;
+
+  @ApiProperty({ example: 248_320, description: 'Taille en octets.' })
+  sizeBytes: number;
+}
+
 /** Un partage tel que son créateur le voit. */
 export class ShareResponse {
   @ApiProperty({ format: 'uuid' })
   id: string;
 
-  @ApiProperty({ format: 'uuid' })
-  fileId: string;
-
-  @ApiProperty({ example: 'rapport-annuel.pdf' })
-  fileName: string;
+  @ApiProperty({
+    type: [SharedFileResponse],
+    description: 'Fichiers couverts par ce lien — un seul jeton pour toute la session.',
+  })
+  files: SharedFileResponse[];
 
   @ApiPropertyOptional({
     format: 'email',
@@ -51,18 +63,12 @@ export class CreatedShareResponse extends ShareResponse {
     example: 'k3Jv8Qw2_pLm9XcR4tYnB6dFgH1sZaE7',
   })
   token: string;
-
-  @ApiProperty({
-    description: 'Chemin de téléchargement à composer avec l\'adresse du front.',
-    example: '/api/download/k3Jv8Qw2_pLm9XcR4tYnB6dFgH1sZaE7',
-  })
-  downloadPath: string;
 }
 
 /**
  * Ce qu'un lien révèle **avant** téléchargement, à qui le détient.
  *
- * Sert au front à composer sa page d'accueil : nom du fichier, échéance, et
+ * Sert au front à composer sa page d'accueil : fichiers couverts, échéance, et
  * demande de mot de passe le cas échéant — plutôt que de laisser l'utilisateur
  * heurter une erreur.
  */
@@ -74,15 +80,9 @@ export class ShareInfoResponse {
   expiresAt: Date;
 
   @ApiPropertyOptional({
-    example: 'rapport-annuel.pdf',
+    type: [SharedFileResponse],
     description:
       'Absent tant qu\'un mot de passe est exigé : un lien intercepté ne doit pas révéler ce qu\'il contient.',
   })
-  fileName?: string;
-
-  @ApiPropertyOptional({
-    example: 248_320,
-    description: 'Absent tant qu\'un mot de passe est exigé.',
-  })
-  sizeBytes?: number;
+  files?: SharedFileResponse[];
 }

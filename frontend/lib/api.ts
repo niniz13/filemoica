@@ -37,6 +37,41 @@ export interface FileItem {
   createdAt: string;
 }
 
+export type ShareStatus = "ACTIVE" | "EXPIRED" | "REVOKED";
+
+export interface SharedFile {
+  id: string;
+  fileName: string;
+  sizeBytes: number;
+}
+
+export interface Share {
+  id: string;
+  files: SharedFile[];
+  recipientEmail?: string;
+  protectedByPassword: boolean;
+  status: ShareStatus;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface CreatedShare extends Share {
+  token: string;
+}
+
+export interface ShareInfo {
+  requiresPassword: boolean;
+  expiresAt: string;
+  files?: SharedFile[];
+}
+
+export interface CreateShareInput {
+  fileIds: string[];
+  expiresInHours?: number;
+  password?: string;
+  recipientEmail?: string;
+}
+
 interface ApiErrorBody {
   error?: string;
   message?: string | string[];
@@ -145,6 +180,48 @@ function uploadFile(file: File, onProgress?: (fraction: number) => void): Promis
   });
 }
 
+/**
+ * Décrit un lien de partage, sans compte requis. Fournir le mot de passe
+ * révèle la liste des fichiers en une seule fois, sans le ressaisir pour
+ * chaque téléchargement individuel.
+ */
+async function shareInfo(token: string, password?: string): Promise<ShareInfo> {
+  const headers: Record<string, string> = {};
+  if (password) headers["X-Share-Password"] = password;
+
+  const res = await fetch(`${API_BASE}/api/download/${token}/info`, { headers });
+  if (!res.ok) throw await parseErrorResponse(res);
+  return res.json();
+}
+
+/**
+ * Télécharge un fichier d'un partage et déclenche l'enregistrement dans le
+ * navigateur. Sans compte : le jeton (et le mot de passe, s'il y en a un)
+ * suffisent.
+ */
+async function downloadShare(
+  token: string,
+  fileId: string,
+  fileName: string,
+  password?: string,
+): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (password) headers["X-Share-Password"] = password;
+
+  const res = await fetch(`${API_BASE}/api/download/${token}/file/${fileId}`, { headers });
+  if (!res.ok) throw await parseErrorResponse(res);
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
   register: (email: string, password: string) =>
     request<User>("/api/auth/register", { method: "POST", body: { email, password } }),
@@ -156,4 +233,10 @@ export const api = {
   listFiles: () => request<FileItem[]>("/api/files"),
   deleteFile: (id: string) => request<void>(`/api/files/${id}`, { method: "DELETE" }),
   uploadFile,
+  createShare: (input: CreateShareInput) =>
+    request<CreatedShare>("/api/shares", { method: "POST", body: input }),
+  listShares: () => request<Share[]>("/api/shares"),
+  revokeShare: (id: string) => request<void>(`/api/shares/${id}/revoke`, { method: "PATCH" }),
+  shareInfo,
+  downloadShare,
 };

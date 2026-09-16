@@ -1,4 +1,12 @@
-import { Controller, Get, Headers, Logger, Param, Res } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Headers,
+  Logger,
+  Param,
+  ParseUUIDPipe,
+  Res,
+} from '@nestjs/common';
 import {
   ApiHeader,
   ApiOkResponse,
@@ -58,7 +66,7 @@ export class DownloadController {
   @ApiOperation({
     summary: 'Consulter un lien',
     description:
-      'Sans compte. Quand le lien est protégé, le nom et la taille du fichier ne sont pas divulgués : seul le fait qu\'un mot de passe est requis.',
+      'Sans compte. Quand le lien est protégé, la liste des fichiers n\'est pas divulguée : seul le fait qu\'un mot de passe est requis.',
   })
   @ApiOkResponse({ type: ShareInfoResponse })
   @ApiResponse({
@@ -76,15 +84,29 @@ export class DownloadController {
     description: '`SHARE_EXPIRED` — le lien a existé, sa durée est écoulée.',
     type: ApiErrorResponse,
   })
+  @ApiHeader({
+    name: 'X-Share-Password',
+    required: false,
+    description:
+      'Mot de passe du lien, s\'il est protégé. Fourni ici, il révèle la liste des fichiers sans qu\'il soit nécessaire de le ressaisir pour chaque téléchargement.',
+  })
+  @ApiResponse({
+    status: 403,
+    description: '`SHARE_PASSWORD_INVALID` — mot de passe fourni mais incorrect.',
+    type: ApiErrorResponse,
+  })
   @Get(':token/info')
-  async info(@Param('token') token: string): Promise<ShareInfoResponse> {
-    return this.shares.describe(token);
+  async info(
+    @Param('token') token: string,
+    @Headers(PASSWORD_HEADER) password: string | undefined,
+  ): Promise<ShareInfoResponse> {
+    return this.shares.describe(token, password);
   }
 
   @ApiOperation({
-    summary: 'Télécharger un fichier partagé',
+    summary: 'Télécharger un fichier du partage',
     description:
-      'Sans compte : le lien suffit. Le contenu est déchiffré à la volée, sans jamais être écrit en clair sur le serveur.',
+      'Sans compte : le lien suffit. Le fichier demandé doit faire partie du partage. Le contenu est déchiffré à la volée, sans jamais être écrit en clair sur le serveur.',
   })
   @ApiHeader({
     name: 'X-Share-Password',
@@ -106,7 +128,8 @@ export class DownloadController {
   })
   @ApiResponse({
     status: 404,
-    description: '`SHARE_NOT_FOUND` — ce lien n\'existe pas.',
+    description:
+      '`SHARE_NOT_FOUND` — ce lien n\'existe pas, ou `FILE_NOT_IN_SHARE` — ce fichier n\'en fait pas partie.',
     type: ApiErrorResponse,
   })
   @ApiResponse({
@@ -114,15 +137,16 @@ export class DownloadController {
     description: '`SHARE_EXPIRED` — le lien a existé, sa durée est écoulée.',
     type: ApiErrorResponse,
   })
-  @Get(':token')
+  @Get(':token/file/:fileId')
   async download(
     @Param('token') token: string,
+    @Param('fileId', ParseUUIDPipe) fileId: string,
     @Headers(PASSWORD_HEADER) password: string | undefined,
     @Res() response: Response,
   ): Promise<void> {
     // Lève 404, 403, 410 ou 401 selon le contrôle qui échoue. Rien n'est ouvert
     // tant qu'ils ne sont pas tous passés.
-    const granted = await this.shares.authorizeDownload(token, password);
+    const granted = await this.shares.authorizeDownload(token, fileId, password);
 
     this.harden(response, granted.originalName);
 

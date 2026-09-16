@@ -38,19 +38,19 @@ export class SharesController {
   constructor(private readonly shares: SharesService) {}
 
   /**
-   * Crée un lien de partage nominatif et daté.
+   * Crée un lien de partage nominatif et daté, sur un ou plusieurs fichiers.
    *
    * Le jeton n'est renvoyé **qu'ici** : la base n'en garde que l'empreinte.
    */
   @ApiOperation({
-    summary: 'Partager un fichier',
+    summary: 'Partager une session de fichiers',
     description:
-      'Produit un lien que le destinataire peut ouvrir **sans compte**. Le déposant en choisit la durée de vie et, s\'il le souhaite, un mot de passe. Le jeton n\'est montré qu\'ici.',
+      'Produit un lien couvrant tous les fichiers fournis, que le destinataire peut ouvrir **sans compte**. Le déposant en choisit la durée de vie et, s\'il le souhaite, un mot de passe. Le jeton n\'est montré qu\'ici.',
   })
   @ApiCreatedResponse({ type: CreatedShareResponse })
   @ApiResponse({
     status: 404,
-    description: '`FILE_NOT_FOUND` — fichier inexistant ou appartenant à autrui.',
+    description: '`FILE_NOT_FOUND` — un des fichiers est inexistant ou appartient à autrui.',
     type: ApiErrorResponse,
   })
   @Post()
@@ -66,7 +66,6 @@ export class SharesController {
     return {
       ...detail,
       token: share.token,
-      downloadPath: `/api/download/${share.token}`,
     };
   }
 
