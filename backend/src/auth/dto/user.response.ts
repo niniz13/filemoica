@@ -20,13 +20,22 @@ export class UserResponse {
   role: string;
 }
 
-/** Réponse de `GET /api/auth/me` : le strict nécessaire, lu depuis le jeton. */
+/**
+ * Réponse de `GET /api/auth/me`.
+ *
+ * `role` n'est pas lu depuis le jeton : comme pour l'administration, il est
+ * relu en base à chaque appel pour qu'un changement de rôle soit visible
+ * immédiatement, sans attendre l'expiration de la session en cours.
+ */
 export class CurrentUserResponse {
   @ApiProperty({ format: 'uuid' })
   id: string;
 
   @ApiProperty({ format: 'email' })
   email: string;
+
+  @ApiProperty({ enum: ['USER', 'ADMIN'], example: 'USER' })
+  role: string;
 }
 
 /** Réponse de `POST /api/auth/refresh`. Les jetons partent dans les cookies. */

@@ -2,7 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { ApiError, api, type CurrentUser, type FileItem, type Quota } from "@/lib/api";
+import {
+  ApiError,
+  api,
+  type CurrentUser,
+  type FileItem,
+  type ManagedUser,
+  type Quota,
+  type ServiceStats,
+} from "@/lib/api";
 import ShareQrCode from "@/components/share-qr-code";
 import {
   FALLBACK_TILE,
@@ -19,7 +27,7 @@ import {
 const ACCENT = "#5b4bff";
 const WAVE_INTENSITY = 1;
 
-type Screen = "signin" | "drop" | "files" | "account";
+type Screen = "signin" | "drop" | "files" | "account" | "admin";
 type AuthMode = "login" | "register";
 
 interface UploadItem {
@@ -64,6 +72,12 @@ export default function FileTransferApp() {
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const [adminStats, setAdminStats] = useState<ServiceStats | null>(null);
+  const [adminUsers, setAdminUsers] = useState<ManagedUser[]>([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [adminActionId, setAdminActionId] = useState<string | null>(null);
 
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [sessionShares, setSessionShares] = useState<SessionShare[]>([]);
@@ -111,6 +125,20 @@ export default function FileTransferApp() {
       setFilesError(err instanceof ApiError ? err.message : "Impossible de charger les fichiers.");
     } finally {
       setFilesLoading(false);
+    }
+  }, []);
+
+  const refreshAdmin = useCallback(async () => {
+    setAdminLoading(true);
+    try {
+      const [stats, users] = await Promise.all([api.adminStats(), api.adminListUsers()]);
+      setAdminStats(stats);
+      setAdminUsers(users);
+      setAdminError(null);
+    } catch (err) {
+      setAdminError(err instanceof ApiError ? err.message : "Impossible de charger l'administration.");
+    } finally {
+      setAdminLoading(false);
     }
   }, []);
 
@@ -199,6 +227,9 @@ export default function FileTransferApp() {
     setSessionShares([]);
     setClaimedFileIds(new Set());
     setShareError(null);
+    setAdminStats(null);
+    setAdminUsers([]);
+    setAdminError(null);
     setEmail("");
     setPassword("");
     setAuthMode("login");
@@ -240,6 +271,46 @@ export default function FileTransferApp() {
 
   function handleFilesSelected(list: FileList | File[]) {
     Array.from(list).forEach(uploadOne);
+  }
+
+  function goToScreen(next: Screen) {
+    setScreen(next);
+    if (next === "admin") void refreshAdmin();
+  }
+
+  async function togglePlan(target: ManagedUser) {
+    setAdminActionId(target.id);
+    try {
+      const updated = await api.adminChangePlan(target.id, target.plan === "FREE" ? "PREMIUM" : "FREE");
+      setAdminUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+    } catch (err) {
+      setAdminError(err instanceof ApiError ? err.message : "Échec du changement d'offre.");
+    } finally {
+      setAdminActionId(null);
+    }
+  }
+
+  async function toggleRole(target: ManagedUser) {
+    setAdminActionId(target.id);
+    try {
+      const updated = await api.adminChangeRole(target.id, target.role === "USER" ? "ADMIN" : "USER");
+      setAdminUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+    } catch (err) {
+      setAdminError(err instanceof ApiError ? err.message : "Échec du changement de rôle.");
+    } finally {
+      setAdminActionId(null);
+    }
+  }
+
+  async function handleRevokeSessions(target: ManagedUser) {
+    setAdminActionId(target.id);
+    try {
+      await api.adminRevokeSessions(target.id);
+    } catch (err) {
+      setAdminError(err instanceof ApiError ? err.message : "Échec de la révocation des sessions.");
+    } finally {
+      setAdminActionId(null);
+    }
   }
 
   async function handleDelete(id: string) {
@@ -310,7 +381,10 @@ export default function FileTransferApp() {
   const isDrop = screen === "drop";
   const isFiles = screen === "files";
   const isAccount = screen === "account";
+  const isAdmin = screen === "admin";
   const wide = !narrow;
+  const isRoleAdmin = user?.role === "ADMIN";
+  const navItems = isRoleAdmin ? [...NAV, { id: "admin" as Screen, label: "Admin" }] : NAV;
 
   const pendingShareCount = uploads.filter(
     (u) => u.status === "done" && u.fileId && !claimedFileIds.has(u.fileId),
@@ -326,14 +400,24 @@ export default function FileTransferApp() {
     ? `${fmtBytes(quota.usedBytes)} sur ${fmtBytes(quota.limitBytes)}`
     : "Chargement du quota…";
 
-  const headTitle = isDrop ? "Envoyer des fichiers" : isFiles ? "Mes fichiers" : "Mon compte";
+  const headTitle = isDrop
+    ? "Envoyer des fichiers"
+    : isFiles
+      ? "Mes fichiers"
+      : isAdmin
+        ? "Administration"
+        : "Mon compte";
   const headSub = isDrop
     ? quota
       ? `${fmtBytes(quota.remainingBytes)} restants ce mois-ci`
       : "Chiffrement au repos, sans limite de taille annoncée côté design"
     : isFiles
       ? `${files.length} fichier${files.length > 1 ? "s" : ""}`
-      : user?.email ?? "";
+      : isAdmin
+        ? adminStats
+          ? `${adminStats.users.total} compte${adminStats.users.total > 1 ? "s" : ""}`
+          : ""
+        : user?.email ?? "";
 
   const initials = (user?.email ?? "?").slice(0, 2).toUpperCase();
 
@@ -484,10 +568,10 @@ export default function FileTransferApp() {
                   File Moi Ça
                 </div>
                 <div style={{ marginTop: 32, display: "flex", flexDirection: "column", gap: 4 }}>
-                  {NAV.map((n) => (
+                  {navItems.map((n) => (
                     <button
                       key={n.id}
-                      onClick={() => setScreen(n.id)}
+                      onClick={() => goToScreen(n.id)}
                       style={{
                         display: "flex",
                         alignItems: "center",
@@ -522,7 +606,7 @@ export default function FileTransferApp() {
                   </div>
                 </div>
                 <button
-                  onClick={() => setScreen("account")}
+                  onClick={() => goToScreen("account")}
                   style={{
                     marginTop: 26,
                     display: "flex",
@@ -887,6 +971,126 @@ export default function FileTransferApp() {
                   >
                     Se déconnecter
                   </button>
+                </div>
+              )}
+
+              {isAdmin && (
+                <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "0 32px 32px" }}>
+                  {adminError && (
+                    <div style={{ marginBottom: 16, font: `400 14px/1.4 ${sansFont}`, color: "#d2493c" }}>
+                      {adminError}
+                    </div>
+                  )}
+
+                  {adminLoading && !adminStats && (
+                    <div style={{ font: `400 14px/1.4 ${sansFont}`, color: "#6b7178" }}>Chargement…</div>
+                  )}
+
+                  {adminStats && (
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 26 }}>
+                      {[
+                        {
+                          label: "Comptes",
+                          value: String(adminStats.users.total),
+                          sub: `${adminStats.users.free} gratuit${adminStats.users.free > 1 ? "s" : ""} · ${adminStats.users.premium} payant${adminStats.users.premium > 1 ? "s" : ""}`,
+                        },
+                        {
+                          label: "Fichiers",
+                          value: String(adminStats.files.total),
+                          sub: fmtBytes(adminStats.files.totalBytes),
+                        },
+                        {
+                          label: "Partages",
+                          value: String(adminStats.shares.total),
+                          sub: `${adminStats.shares.active} actif${adminStats.shares.active > 1 ? "s" : ""}`,
+                        },
+                      ].map((card) => (
+                        <div
+                          key={card.label}
+                          style={{ flex: "1 1 160px", minWidth: 160, padding: 18, borderRadius: 16, background: "#f6f4f0" }}
+                        >
+                          <div style={{ font: `400 13px/1 ${sansFont}`, color: "#6b7178" }}>{card.label}</div>
+                          <div style={{ marginTop: 8, font: `300 30px/1 ${sansFont}`, letterSpacing: "-.02em", color: "#16181c" }}>
+                            {card.value}
+                          </div>
+                          <div style={{ marginTop: 6, font: `400 12.5px/1.3 ${sansFont}`, color: "#6b7178" }}>{card.sub}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    {adminUsers.map((u) => {
+                      const busy = adminActionId === u.id;
+                      const isSelf = u.id === user?.id;
+                      return (
+                        <div
+                          key={u.id}
+                          style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 6px", borderBottom: "1px solid rgba(22,24,28,.06)", flexWrap: "wrap" }}
+                        >
+                          <div style={{ flex: "1 1 220px", minWidth: 200 }}>
+                            <div style={{ font: `400 15px/1.25 ${sansFont}`, color: "#16181c" }}>{u.email}</div>
+                            <div style={{ marginTop: 4, font: `400 13px/1.3 ${sansFont}`, color: "#6b7178" }}>
+                              {u.fileCount} fichier{u.fileCount > 1 ? "s" : ""} · {fmtBytes(u.usedBytesThisMonth)} / {fmtBytes(u.quotaBytes)} ce mois-ci
+                            </div>
+                          </div>
+
+                          <div
+                            style={{
+                              padding: "5px 12px",
+                              borderRadius: 99,
+                              font: `400 12.5px/1 ${sansFont}`,
+                              background: u.role === "ADMIN" ? "#ece9ff" : "#f6f4f0",
+                              color: u.role === "ADMIN" ? "#3527cc" : "#3b4046",
+                              flex: "none",
+                            }}
+                          >
+                            {u.role}
+                          </div>
+                          <div
+                            style={{
+                              padding: "5px 12px",
+                              borderRadius: 99,
+                              font: `400 12.5px/1 ${sansFont}`,
+                              background: u.plan === "PREMIUM" ? "#eafaf1" : "#f6f4f0",
+                              color: u.plan === "PREMIUM" ? "#0b6b45" : "#3b4046",
+                              flex: "none",
+                            }}
+                          >
+                            {u.plan}
+                          </div>
+
+                          <div style={{ display: "flex", gap: 8, flex: "none" }}>
+                            <button
+                              onClick={() => togglePlan(u)}
+                              disabled={busy}
+                              className="ftc-btn-secondary"
+                              style={{ padding: "8px 14px", borderRadius: 99, font: `400 13px/1 ${sansFont}` }}
+                            >
+                              {u.plan === "FREE" ? "Passer en PREMIUM" : "Repasser en FREE"}
+                            </button>
+                            <button
+                              onClick={() => toggleRole(u)}
+                              disabled={busy || isSelf}
+                              title={isSelf ? "Impossible de retirer ses propres droits d'administration" : undefined}
+                              className="ftc-btn-secondary"
+                              style={{ padding: "8px 14px", borderRadius: 99, font: `400 13px/1 ${sansFont}`, opacity: isSelf ? 0.5 : 1 }}
+                            >
+                              {u.role === "USER" ? "Rendre admin" : "Retirer admin"}
+                            </button>
+                            <button
+                              onClick={() => handleRevokeSessions(u)}
+                              disabled={busy}
+                              className="ftc-btn-text"
+                              style={{ padding: "8px 14px", borderRadius: 99, font: `400 13px/1 ${sansFont}` }}
+                            >
+                              Révoquer les sessions
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>

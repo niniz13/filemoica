@@ -102,6 +102,21 @@ export class AuthService {
   }
 
   /**
+   * Relit un compte par son identifiant.
+   *
+   * Le rôle n'est jamais porté par le jeton de session : il est relu en base à
+   * chaque fois qu'il compte, ici comme dans l'administration, pour qu'un
+   * changement de rôle prenne effet immédiatement plutôt qu'à la prochaine
+   * connexion.
+   */
+  async findById(id: string): Promise<PublicUser | null> {
+    return this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, email: true, role: true },
+    });
+  }
+
+  /**
    * Normalise un email avant toute comparaison.
    *
    * Sans cela, `Alice@Example.fr` et `alice@example.fr` créeraient deux comptes

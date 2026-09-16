@@ -11,15 +11,18 @@ export class ApiError extends Error {
   }
 }
 
+export type UserRole = "USER" | "ADMIN";
+
 export interface User {
   id: string;
   email: string;
-  role?: string;
+  role: UserRole;
 }
 
 export interface CurrentUser {
   id: string;
   email: string;
+  role: UserRole;
 }
 
 export interface Quota {
@@ -70,6 +73,23 @@ export interface CreateShareInput {
   expiresInHours?: number;
   password?: string;
   recipientEmail?: string;
+}
+
+export interface ManagedUser {
+  id: string;
+  email: string;
+  role: UserRole;
+  plan: "FREE" | "PREMIUM";
+  createdAt: string;
+  fileCount: number;
+  usedBytesThisMonth: number;
+  quotaBytes: number;
+}
+
+export interface ServiceStats {
+  users: { total: number; free: number; premium: number };
+  files: { total: number; totalBytes: number };
+  shares: { total: number; active: number };
 }
 
 interface ApiErrorBody {
@@ -239,4 +259,12 @@ export const api = {
   revokeShare: (id: string) => request<void>(`/api/shares/${id}/revoke`, { method: "PATCH" }),
   shareInfo,
   downloadShare,
+  adminStats: () => request<ServiceStats>("/api/admin/stats"),
+  adminListUsers: () => request<ManagedUser[]>("/api/admin/users"),
+  adminChangePlan: (id: string, plan: "FREE" | "PREMIUM") =>
+    request<ManagedUser>(`/api/admin/users/${id}/plan`, { method: "PATCH", body: { plan } }),
+  adminChangeRole: (id: string, role: UserRole) =>
+    request<ManagedUser>(`/api/admin/users/${id}/role`, { method: "PATCH", body: { role } }),
+  adminRevokeSessions: (id: string) =>
+    request<{ revoked: number }>(`/api/admin/users/${id}/revoke-sessions`, { method: "POST" }),
 };
