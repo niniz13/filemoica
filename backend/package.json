@@ -20,6 +20,7 @@
     "db:studio": "prisma studio",
     "keys:rotate": "node dist/rotate-keys.js",
     "tokens:purge": "node dist/purge-tokens.js",
+    "seed": "node dist/seed.js",
     "deploy": "nest deploy",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
