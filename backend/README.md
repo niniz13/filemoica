@@ -186,7 +186,7 @@ npx tsc --noEmit         # vérification de types
 | Dépôt, liste et suppression de fichiers | ✅ implémenté et testé |
 | Partages, révocation et téléchargement | ⬜ schéma en base, routes à écrire |
 
-**162 tests au vert** (100 unitaires, 62 end-to-end), analyse statique et
+**170 tests au vert** (100 unitaires, 70 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 ---
@@ -495,17 +495,52 @@ La suppression d'un fichier appartenant à quelqu'un d'autre renvoie **404, pas
 identifiants, on pourrait dénombrer les fichiers du service. Le 404 ne distingue
 pas « n'existe pas » de « n'est pas à vous ».
 
+### Contrôle du format par les octets, pas par l'extension
+
+L'extension et le type annoncé viennent tous deux du client : renommer
+`virus.exe` en `rapport.pdf` suffirait à tromper une vérification qui s'y
+fierait. Le [contrôle](src/files/mime-sniffer.stream.ts) lit donc les **octets de
+signature** du fichier.
+
+Il est placé **dans le flux, avant le chiffrement** : un format refusé n'est
+jamais écrit sur le disque. Seuls quatre kilo-octets sont retenus en mémoire, y
+compris pour un fichier de 200 Mo.
+
+Les [formats acceptés](src/files/allowed-types.ts) couvrent documents, images,
+vidéo, audio et archives. En ajouter un tient en une ligne.
+
+**Cas particulier du texte.** Un `.txt` ou un `.csv` n'a aucune signature —
+rien ne le distingue d'un fragment quelconque. Ces formats sont donc acceptés
+sur la foi du type déclaré, doublée d'une vérification sommaire du contenu
+(absence d'octet nul). Sans cette porte, aucun fichier texte ne passerait ; sans
+la vérification, il suffirait de déclarer `text/plain` pour contourner la liste.
+
+**Ce que ce contrôle ne fait pas**, et qu'il ne faut pas prétendre : il ne
+détecte ni un document porteur de macros, ni un PDF piégé, ni une archive
+malveillante — tous figurent dans les formats acceptés. Seule une analyse
+antivirale les repérerait, et elle est impossible sur un contenu chiffré dès sa
+réception.
+
+La liste sert donc surtout à **définir le périmètre du service**. La protection
+réelle est ailleurs : le serveur n'exécute ni n'affiche jamais un fichier
+déposé, et le téléchargement force l'enregistrement plutôt que l'ouverture dans
+le navigateur.
+
 ### Limites appliquées
 
 | Limite | Valeur | Raison |
 |---|---|---|
-| Taille d'un fichier | `MAX_FILE_SIZE_MB`, 25 par défaut | Sans borne, un seul dépôt peut remplir le disque |
+| Taille d'un fichier | `MAX_FILE_SIZE_MB`, **200 par défaut** | Sans borne, un seul dépôt peut remplir le disque |
 | Fichiers par requête | 1 | Réduire ce qu'on accepte réduit ce qu'il faut valider |
 | Champs supplémentaires | 0 | Idem |
 
-Un dépôt interrompu ou trop volumineux voit son contenu partiel **retiré du
-support** : sans cela, chaque échec laisserait un fichier orphelin que personne
-ne nettoierait.
+Un dépôt interrompu, trop volumineux ou d'un format refusé voit son contenu
+partiel **retiré du support** : sans cela, chaque échec laisserait un fichier
+orphelin que personne ne nettoierait.
+
+> **À ne pas confondre avec le quota de l'offre.** Ces 200 Mo sont une limite
+> **par fichier**. L'offre gratuite envisagée parle de 200 Mo **par mois**, ce
+> qui est un contrôle différent — un cumul par compte, qui reste à implémenter.
 
 ---
 
@@ -695,6 +730,7 @@ Les tests les plus significatifs pour l'évaluation :
 | …et reste pourtant récupérable avec sa clé | `files.e2e-spec.ts` |
 | Un utilisateur ne voit pas les fichiers d'un autre | `files.e2e-spec.ts` |
 | Le fichier d'autrui renvoie 404, pas 403 | `files.e2e-spec.ts` |
+| Un exécutable déguisé en PDF est refusé | `files.e2e-spec.ts` |
 
 ---
 

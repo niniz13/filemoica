@@ -171,7 +171,7 @@ describe('Fichiers (e2e)', () => {
     // parlent les fichiers déposés.
     it('range le fichier sous un nom sans rapport avec l\'original', async () => {
       const cookies = await connecter('alice@example.fr');
-      await deposer(cookies, 'bilan-financier-secret.pdf').expect(201);
+      await deposer(cookies, 'bilan-financier-secret.txt').expect(201);
 
       const stocke = await prisma.file.findFirstOrThrow({
         select: { storageName: true },
@@ -183,7 +183,7 @@ describe('Fichiers (e2e)', () => {
 
     it('chiffre le nom d\'origine en base', async () => {
       const cookies = await connecter('alice@example.fr');
-      await deposer(cookies, 'bilan-financier-secret.pdf').expect(201);
+      await deposer(cookies, 'bilan-financier-secret.txt').expect(201);
 
       const stocke = await prisma.file.findFirstOrThrow({
         select: { originalNameEnc: true },
@@ -208,9 +208,9 @@ describe('Fichiers (e2e)', () => {
     it('préserve les accents dans le nom du fichier', async () => {
       const cookies = await connecter('alice@example.fr');
 
-      const response = await deposer(cookies, 'rapport-générique-été.pdf');
+      const response = await deposer(cookies, 'rapport-générique-été.txt');
 
-      expect(response.body.originalName).toBe('rapport-générique-été.pdf');
+      expect(response.body.originalName).toBe('rapport-générique-été.txt');
     });
 
     it('refuse une requête sans fichier', async () => {
@@ -243,6 +243,101 @@ describe('Fichiers (e2e)', () => {
         .set('Cookie', cookies)
         .attach('file', Buffer.from('x'), 'test.txt')
         .expect(403);
+    });
+  });
+
+  describe('Contrôle du format', () => {
+    /** Entêtes binaires réels, suffisants pour identifier ces formats. */
+    const SIGNATURES = {
+      pdf: Buffer.from('%PDF-1.7\n%\xE2\xE3\xCF\xD3\n', 'binary'),
+      png: Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+        0x49, 0x48, 0x44, 0x52,
+      ]),
+      zip: Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]),
+      // « MZ » : un exécutable Windows.
+      exe: Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00]),
+    };
+
+    it.each([
+      ['un PDF', SIGNATURES.pdf, 'document.pdf'],
+      ['une image PNG', SIGNATURES.png, 'photo.png'],
+      ['une archive ZIP', SIGNATURES.zip, 'archive.zip'],
+    ])('accepte %s', async (_cas, contenu, nom) => {
+      const cookies = await connecter('alice@example.fr');
+
+      await request(app.getHttpServer())
+        .post('/api/files')
+        .set(...CSRF)
+        .set('Cookie', cookies)
+        .attach('file', contenu, nom)
+        .expect(201);
+    });
+
+    it('accepte un fichier texte, qui n\'a pourtant aucune signature', async () => {
+      const cookies = await connecter('alice@example.fr');
+
+      await deposer(cookies, 'notes.txt', 'Juste du texte.').expect(201);
+    });
+
+    it('refuse un exécutable', async () => {
+      const cookies = await connecter('alice@example.fr');
+
+      const response = await request(app.getHttpServer())
+        .post('/api/files')
+        .set(...CSRF)
+        .set('Cookie', cookies)
+        .attach('file', SIGNATURES.exe, 'programme.exe')
+        .expect(415);
+
+      expect(response.body.error).toBe('FILE_TYPE_NOT_ALLOWED');
+    });
+
+    // Le cœur du contrôle : ni l'extension ni le type annoncé ne viennent de
+    // nous. Seuls les octets disent ce qu'est réellement un fichier.
+    it('refuse un exécutable déguisé en PDF', async () => {
+      const cookies = await connecter('alice@example.fr');
+
+      const response = await request(app.getHttpServer())
+        .post('/api/files')
+        .set(...CSRF)
+        .set('Cookie', cookies)
+        .attach('file', SIGNATURES.exe, {
+          filename: 'rapport-anodin.pdf',
+          contentType: 'application/pdf',
+        })
+        .expect(415);
+
+      expect(response.body.error).toBe('FILE_TYPE_NOT_ALLOWED');
+    });
+
+    it('refuse un binaire déguisé en texte', async () => {
+      const cookies = await connecter('alice@example.fr');
+
+      await request(app.getHttpServer())
+        .post('/api/files')
+        .set(...CSRF)
+        .set('Cookie', cookies)
+        .attach('file', SIGNATURES.exe, {
+          filename: 'notes.txt',
+          contentType: 'text/plain',
+        })
+        .expect(415);
+    });
+
+    // Un fichier refusé ne doit pas laisser de trace : ni entrée en base, ni
+    // contenu partiel sur le support.
+    it('ne laisse aucune trace d\'un fichier refusé', async () => {
+      const cookies = await connecter('alice@example.fr');
+
+      await request(app.getHttpServer())
+        .post('/api/files')
+        .set(...CSRF)
+        .set('Cookie', cookies)
+        .attach('file', SIGNATURES.exe, 'programme.exe')
+        .expect(415);
+
+      expect(await prisma.file.count()).toBe(0);
     });
   });
 

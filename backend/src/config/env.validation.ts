@@ -99,8 +99,8 @@ export class EnvironmentVariables {
    */
   @IsInt()
   @Min(1)
-  @Max(1024)
-  MAX_FILE_SIZE_MB: number = 25;
+  @Max(2048)
+  MAX_FILE_SIZE_MB: number = 200;
 
   /**
    * Clé maître (KEK) version 1. Elle ne chiffre jamais un fichier directement :

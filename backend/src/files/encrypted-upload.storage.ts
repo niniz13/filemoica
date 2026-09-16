@@ -5,6 +5,7 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { CryptoService } from '../crypto/crypto.service';
 import { FileStorage } from '../storage/file-storage';
+import { MimeTypeSniffer } from './mime-sniffer.stream';
 
 /**
  * Métadonnées produites par le chiffrement, rattachées au fichier reçu.
@@ -113,7 +114,15 @@ export class EncryptedUploadStorage implements StorageEngine {
     });
 
     try {
-      await pipeline(file.stream, compteur, cipher, destination);
+      // L'ordre compte : on identifie le format **avant** de chiffrer, pour
+      // pouvoir refuser un fichier sans jamais l'avoir écrit.
+      await pipeline(
+        file.stream,
+        new MimeTypeSniffer(file.mimetype),
+        compteur,
+        cipher,
+        destination,
+      );
     } catch (error) {
       // Un fichier partiellement écrit ne serait jamais déchiffrable : on le
       // retire tout de suite plutôt que de laisser un déchet sur le support.
