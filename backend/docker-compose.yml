@@ -1,8 +1,21 @@
-# PostgreSQL de développement.
+# PostgreSQL de développement — et la base de test.
 #
-# Sert à travailler et à jouer les tests en local. L'infrastructure de
-# production est du ressort de l'équipe SRC : ce fichier est un point de départ
-# à aligner avec eux, pas la cible de déploiement.
+# Sert à travailler avec `npm run start:dev`, qui tourne sur la machine hôte :
+# pas d'image à reconstruire à chaque sauvegarde de fichier.
+#
+# ⚠️ **Ne pas supprimer au profit du compose de la racine.** Ce fichier est le
+# seul à monter `docker/init-test-db.sh`, qui crée la base `filemoica_test` —
+# sans lui, toute la suite end-to-end tombe.
+#
+# Deux autres fichiers compose existent, avec chacun son métier :
+#
+#   - `../docker-compose.yml` — la pile complète (base, migrations, backend,
+#     frontend) pour une démonstration où tout est joignable en HTTP.
+#   - `docker-compose.deploy.yml` — la pile durcie, point de départ pour SRC :
+#     base non publiée, `read_only`, `cap_drop`, secrets obligatoires.
+#
+# Celui de la racine publie lui aussi le port 5433 : les deux ne peuvent pas
+# tourner en même temps.
 #
 # Les identifiants ci-dessous sont des valeurs de développement, volontairement
 # lisibles : cette base ne contient que des données fictives et n'est exposée

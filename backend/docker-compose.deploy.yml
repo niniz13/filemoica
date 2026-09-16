@@ -1,8 +1,20 @@
-# Pile complète : base, migrations, application.
+# Pile de production : base, migrations, application. **Durcie.**
 #
-# Distinct de `docker-compose.yml`, qui ne monte qu'un PostgreSQL de
-# développement. Les deux ne se mélangent pas : celui-ci lance **aussi**
-# l'application, ce qui entrerait en conflit avec `npm run start:dev`.
+# C'est le fichier destiné au déploiement. Deux autres existent, à ne pas
+# confondre avec celui-ci :
+#
+#   - `docker-compose.yml` — PostgreSQL seul, plus la base de test. C'est celui
+#     du développement quotidien ; ne pas le supprimer, il crée
+#     `filemoica_test` dont dépend toute la suite end-to-end.
+#   - `../docker-compose.yml` — la pile complète avec le **frontend**, pour une
+#     démonstration où tout est joignable en HTTP. Il publie la base sur l'hôte
+#     et tourne en `NODE_ENV=development` : commode pour essayer le projet,
+#     à ne pas exposer.
+#
+# Ce que celui-ci fait de plus : la base n'est publiée nulle part, l'application
+# n'écoute que sur la boucle locale, le système de fichiers est en lecture
+# seule, toutes les capacités noyau sont retirées, et les secrets sont
+# obligatoires — aucune valeur par défaut.
 #
 # Sert à deux choses :
 #   1. vérifier que la conteneurisation fonctionne de bout en bout ;

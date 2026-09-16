@@ -16,7 +16,7 @@ Ce document liste ce qui dépend de vous. **Répondez directement dans les cases
 | Fichier | Rôle |
 |---|---|
 | [`backend/Dockerfile`](../backend/Dockerfile) | Image multi-étapes, utilisateur non-root |
-| [`backend/docker-compose.deploy.yml`](../backend/docker-compose.deploy.yml) | Pile complète : base, migrations, application |
+| [`backend/docker-compose.deploy.yml`](../backend/docker-compose.deploy.yml) | **La pile à déployer** : base, migrations, application — durcie |
 | [`backend/.env.deploy.example`](../backend/.env.deploy.example) | Modèle de configuration à remplir |
 | [`backend/scripts/verifier-deploiement.mjs`](../backend/scripts/verifier-deploiement.mjs) | Vérifie un déploiement de l'extérieur |
 | **[configuration-deploiement.md](configuration-deploiement.md)** | **Toutes les variables d'environnement, leurs contraintes et ce qui casse si elles sont mal réglées** |
@@ -31,6 +31,14 @@ cp .env.deploy.example .env.deploy     # puis remplir les trois clés
 docker compose -f docker-compose.deploy.yml --env-file .env.deploy -p filemoica up -d --build
 node scripts/verifier-deploiement.mjs http://localhost:3000
 ```
+
+> ⚠️ **Il existe un `docker-compose.yml` à la racine du dépôt — ce n'est pas
+> celui-là.** Il monte tout le projet, frontend compris, pour qu'on puisse
+> essayer le service en une commande. Il publie la base sur l'hôte, tourne en
+> `NODE_ENV=development` et n'a aucun durcissement : il est fait pour une
+> démonstration sur un poste, pas pour être exposé.
+>
+> **Le fichier à déployer est `backend/docker-compose.deploy.yml`.**
 
 Le compose enchaîne tout seul : base saine → migrations → application. Le
 conteneur de migrations s'arrête une fois son travail fait, et l'application ne
