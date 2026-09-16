@@ -193,6 +193,20 @@ export class CryptoService {
   }
 
   /**
+   * Indique avec quelle version de clé une valeur a été scellée.
+   *
+   * Sert à la rotation : c'est ce qui permet de repérer les données restées sur
+   * l'ancienne clé, sans avoir à les déchiffrer pour le savoir.
+   *
+   * @returns La version, ou `null` si la valeur n'est pas au format attendu.
+   */
+  versionOf(sealed: string): string | null {
+    const version = sealed.split(SEALED_SEPARATOR)[0];
+
+    return this.keys.has(version) ? version : null;
+  }
+
+  /**
    * Tire une clé de fichier (DEK) au hasard.
    *
    * Elle ne quitte jamais la mémoire en clair : l'appelant la passe à

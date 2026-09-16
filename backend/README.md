@@ -175,6 +175,7 @@ npx tsc --noEmit         # vérification de types
 | `npm run db:migrate:test` | Applique les migrations sur la base de test |
 | `npm run db:deploy` | Applique les migrations sans en créer (production) |
 | `npm run db:studio` | Interface de consultation de la base |
+| `npm run keys:rotate` | Bascule les données vers la nouvelle clé maître (`-- --dry-run` pour simuler) |
 
 ---
 
@@ -192,7 +193,7 @@ npx tsc --noEmit         # vérification de types
 | Quota mensuel et offres | ✅ implémenté et testé |
 | Partages, révocation et téléchargement | ✅ implémenté et testé |
 
-**221 tests au vert** (100 unitaires, 121 end-to-end), analyse statique et
+**229 tests au vert** (100 unitaires, 129 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 **Le parcours utilisateur est complet** : déposer, partager, télécharger,
@@ -300,10 +301,45 @@ de relire et re-chiffrer tous les fichiers. Ici on ne re-chiffre que les DEK,
 quelques dizaines d'octets chacune : les fichiers ne sont pas touchés. C'est le
 modèle employé par AWS KMS et Google Cloud KMS.
 
-La bascule est déjà fonctionnelle : ajouter `ENCRYPTION_KEY_V2` à la
+La version de clé voyage avec chaque donnée : ajouter `ENCRYPTION_KEY_V2` à la
 configuration suffit à chiffrer les nouvelles données en v2 tout en continuant à
-lire celles en v1, **sans changement de code**. La version de clé voyage avec
-chaque donnée.
+lire celles en v1, **sans changement de code**.
+
+### Faire tourner les clés
+
+```bash
+# 1. Générer la nouvelle clé
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# 2. L'ajouter en ENCRYPTION_KEY_V2, SANS retirer ENCRYPTION_KEY_V1
+
+# 3. Simuler
+npm run keys:rotate -- --dry-run
+
+# 4. Exécuter
+npm run keys:rotate
+
+# 5. Rapport à zéro reste → retirer ENCRYPTION_KEY_V1
+```
+
+**Mesuré sur la base de développement : 4 fichiers et 1 partage re-scellés en
+101 ms, et les fichiers sur le disque rigoureusement inchangés** (empreinte
+SHA-256 identique avant et après).
+
+C'est tout l'intérêt du chiffrement enveloppe : la rotation réécrit la clé de
+chaque fichier — quelques dizaines d'octets — et jamais les fichiers eux-mêmes.
+Sur un volume réel, c'est la différence entre quelques secondes et plusieurs
+heures d'indisponibilité.
+
+Trois propriétés rendent l'opération sûre :
+
+- **Idempotente** — une donnée déjà sur la clé cible est ignorée ; relancer ne
+  fait rien de plus.
+- **Reprenable** — chaque enregistrement est écrit indépendamment. Une
+  interruption laisse un mélange d'anciennes et de nouvelles versions, que la
+  prochaine exécution achève et que le service sait lire entre-temps.
+- **Sans interruption de service** — l'application peut continuer de tourner
+  pendant la bascule.
 
 ### AES-256-GCM, et pourquoi pas CBC
 
@@ -922,6 +958,8 @@ Les tests les plus significatifs pour l'évaluation :
 | Deux fichiers de même nom n'ont pas le même chiffré | `crypto.service.spec.ts` |
 | Une fuite de la base ne livre aucun lien de partage | `crypto.service.spec.ts` |
 | Une rotation de clés ne casse pas les données existantes | `crypto.service.spec.ts` |
+| Une rotation ne touche pas aux fichiers sur le disque | `key-rotation.e2e-spec.ts` |
+| Le contenu reste déchiffrable après rotation | `key-rotation.e2e-spec.ts` |
 | Une erreur interne ne divulgue rien au client | `all-exceptions.filter.spec.ts` |
 | Un formulaire posté depuis un site tiers est bloqué | `csrf.guard.spec.ts` |
 | La sonde bascule en 503 quand la base tombe | `health.e2e-spec.ts` |
@@ -969,7 +1007,6 @@ besoin apparaissait.
 
 | Lot | Contenu |
 |---|---|
-| Rotation | Script de re-chiffrement des données existantes avec une nouvelle clé |
 | Journalisation | Logs structurés pour la centralisation |
 | Purge | Commande de nettoyage des jetons expirés, pour le cron de SRC |
 | Limitation de débit | Ralentir les tentatives répétées sur la connexion |

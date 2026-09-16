@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { CryptoService } from './crypto.service';
+import { KeyRotationService } from './key-rotation.service';
 
 /**
  * Opérations cryptographiques, disponibles partout.
@@ -11,7 +12,7 @@ import { CryptoService } from './crypto.service';
  */
 @Global()
 @Module({
-  providers: [CryptoService],
-  exports: [CryptoService],
+  providers: [CryptoService, KeyRotationService],
+  exports: [CryptoService, KeyRotationService],
 })
 export class CryptoModule {}

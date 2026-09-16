@@ -17,6 +17,11 @@ import { StorageModule } from './storage/storage.module';
       // Validation au démarrage : configuration incomplète = refus de démarrer.
       validate: validateEnv,
       cache: true,
+      // En test, le fichier `.env` du poste est ignoré : les tests ne doivent
+      // dépendre que de `test/setup-env.ts`. Sans cela, une clé ajoutée
+      // localement — lors d'une rotation, par exemple — se glisse dans la
+      // configuration des tests et en fausse les hypothèses.
+      ignoreEnvFile: process.env.NODE_ENV === 'test',
     }),
     PrismaModule,
     CryptoModule,
