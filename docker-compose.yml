@@ -1,0 +1,109 @@
+# Pile complète du projet — base, migrations, backend, frontend.
+#
+# Sert à lancer tout filemoica en une seule commande, pour essayer le service
+# ou en faire la démonstration sans installer Node ni PostgreSQL en local.
+#
+# Distinct des deux fichiers du backend :
+#   - `backend/docker-compose.yml` ne monte qu'un PostgreSQL de développement,
+#     pour travailler avec `npm run start:dev` (rechargement à chaud).
+#   - `backend/docker-compose.deploy.yml` est le point de départ pour SRC,
+#     durci pour la production (pas de port de base exposé, lecture seule…).
+#
+# Celui-ci privilégie la simplicité : tout tourne, tout est joignable depuis
+# la machine hôte, en un `docker compose up --build`.
+#
+#   Démarrer : docker compose up --build
+#   Arrêter  : docker compose down
+#   Purger   : docker compose down -v   (supprime aussi les données et fichiers)
+#
+# Configuration : copier `.env.example` en `.env` avant le premier démarrage.
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-filemoica}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-filemoica}
+      POSTGRES_DB: ${POSTGRES_DB:-filemoica}
+    ports:
+      - '${POSTGRES_PORT:-5433}:5432'
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-filemoica}']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Conteneur éphémère : applique les migrations puis s'arrête. Le backend
+  # n'accepte de démarrer qu'une fois qu'il a réussi (voir `depends_on`), pour
+  # ne jamais servir de requêtes sur un schéma incomplet.
+  migrate:
+    build:
+      context: ./backend
+      target: migrations
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-filemoica}:${POSTGRES_PASSWORD:-filemoica}@db:5432/${POSTGRES_DB:-filemoica}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: 'no'
+
+  backend:
+    build:
+      context: ./backend
+      target: runtime
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      # L'image de base tourne en NODE_ENV=production (voir backend/Dockerfile),
+      # ce qui pose les cookies de session en `Secure` — invisibles pour tout
+      # navigateur tant que la page n'est pas servie en HTTPS. Cette pile sert
+      # tout en HTTP sur localhost : sans ce recouvrement, la session ne
+      # survit à aucun rechargement de page (WebKit refuse même de poser le
+      # cookie). `docker-compose.deploy.yml`, lui, reste en production — c'est
+      # là qu'un reverse proxy HTTPS rend le cookie `Secure` pertinent.
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-filemoica}:${POSTGRES_PASSWORD:-filemoica}@db:5432/${POSTGRES_DB:-filemoica}
+      JWT_SECRET: ${JWT_SECRET:?generer avec node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-7}
+      ENCRYPTION_KEY_V1: ${ENCRYPTION_KEY_V1:?generer avec node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"}
+      HMAC_INDEX_KEY: ${HMAC_INDEX_KEY:?generer avec node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"}
+      MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-200}
+      FREE_PLAN_QUOTA_MB: ${FREE_PLAN_QUOTA_MB:-200}
+      PREMIUM_PLAN_QUOTA_MB: ${PREMIUM_PLAN_QUOTA_MB:-20480}
+      # Origine exacte du front tel qu'exposé sur la machine hôte : sert au
+      # CORS et à la défense CSRF, jamais le nom du service Docker.
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3001}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
+    ports:
+      - '${BACKEND_PORT:-3000}:3000'
+    volumes:
+      - backend-storage:/var/lib/filemoica/storage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Url telle que le navigateur du visiteur doit joindre l'API — inlinée
+        # au build, donc figée tant que l'image n'est pas reconstruite.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000}
+    restart: unless-stopped
+    ports:
+      - '${FRONTEND_PORT:-3001}:3001'
+    depends_on:
+      - backend
+
+volumes:
+  db-data:
+  # Fichiers chiffrés déposés par les utilisateurs. À sauvegarder avec le dump
+  # de la base : restaurer l'un sans l'autre ne donne rien d'exploitable.
+  backend-storage:

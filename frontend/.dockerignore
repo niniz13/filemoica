@@ -1,0 +1,23 @@
+# Contexte de construction — fonctionne en liste blanche, comme
+# backend/.dockerignore. Tout est exclu par défaut, puis on réintègre
+# explicitement ce que la construction exige.
+#
+# Ce qui ne doit **jamais** entrer dans une image :
+#   - `.env*`        NEXT_PUBLIC_API_URL est passée en ARG de build, pas lue
+#                     depuis un fichier ; aucun `.env` n'a sa place ici.
+#   - `.git`          tout l'historique.
+#   - `node_modules`  réinstallé dans l'image depuis package-lock.json.
+*
+
+# --- Ce dont la construction a besoin --------------------------------------
+!package.json
+!package-lock.json
+!tsconfig.json
+!next.config.ts
+!postcss.config.mjs
+!eslint.config.mjs
+!next-env.d.ts
+!app
+!components
+!lib
+!public

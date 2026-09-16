@@ -1,0 +1,9 @@
+# Secrets de lancement local de la pile complète (voir docker-compose.yml).
+# Les sous-projets (backend/, frontend/) ont leurs propres .gitignore pour
+# leurs dépendances et artefacts de build respectifs.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+.DS_Store
