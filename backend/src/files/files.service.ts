@@ -3,6 +3,7 @@ import { CryptoService } from '../crypto/crypto.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { FileStorage } from '../storage/file-storage';
 import type { EncryptedUpload } from './encrypted-upload.storage';
+import { QuotaService } from './quota.service';
 
 /** Un fichier tel que son propriétaire le voit. */
 export interface OwnedFile {
@@ -27,6 +28,7 @@ export class FilesService {
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
     private readonly storage: FileStorage,
+    private readonly quota: QuotaService,
   ) {}
 
   /**
@@ -58,6 +60,10 @@ export class FilesService {
         },
         select: { id: true, sizeBytes: true, createdAt: true },
       });
+
+      // Après l'enregistrement seulement : un dépôt qui échoue ne doit pas
+      // consommer de quota.
+      await this.quota.record(ownerId, upload.sizeBytes);
 
       this.logger.log(`Fichier déposé : ${file.id} (${file.sizeBytes} octets)`);
 

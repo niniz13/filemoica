@@ -1,4 +1,8 @@
-import { PayloadTooLargeException } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  PayloadTooLargeException,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import type { StorageEngine } from 'multer';
 import { Transform } from 'node:stream';
@@ -59,11 +63,11 @@ export class EncryptedUploadStorage implements StorageEngine {
   ) {}
 
   _handleFile(
-    _req: Request,
+    req: Request,
     file: Express.Multer.File,
     callback: (error?: unknown, info?: Partial<EncryptedUpload>) => void,
   ): void {
-    this.encrypt(file)
+    this.encrypt(file, req.quotaRemainingBytes)
       .then((info) => callback(null, info))
       .catch((error: unknown) => callback(error));
   }
@@ -93,8 +97,14 @@ export class EncryptedUploadStorage implements StorageEngine {
       .catch((error: Error) => callback(error));
   }
 
+  /**
+   * @param quotaRemainingBytes Solde mensuel du compte, posé par le garde de
+   * quota. Le dépôt est interrompu dès qu'il est dépassé — l'en-tête de
+   * longueur annoncé par le client ne suffit pas, puisqu'il vient du client.
+   */
   private async encrypt(
     file: Express.Multer.File,
+    quotaRemainingBytes?: number,
   ): Promise<Partial<EncryptedUpload>> {
     const dataKey = this.crypto.generateDataKey();
     const { cipher, iv, authTag } = this.crypto.createContentCipher(dataKey);
@@ -109,6 +119,29 @@ export class EncryptedUploadStorage implements StorageEngine {
     const compteur = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         sizeBytes += chunk.length;
+
+        // Quota dépassé : on interrompt à l'octet de trop. Le contrôle vit ici
+        // plutôt que dans un garde, car multer sait vider proprement la
+        // requête en cours — refuser plus tôt couperait la connexion et le
+        // client verrait une erreur réseau au lieu du message.
+        if (
+          quotaRemainingBytes !== undefined &&
+          sizeBytes > quotaRemainingBytes
+        ) {
+          const resteMo = (quotaRemainingBytes / (1024 * 1024)).toFixed(1);
+
+          callback(
+            new HttpException(
+              {
+                error: 'QUOTA_EXCEEDED',
+                message: `Quota mensuel atteint : il ne vous reste que ${resteMo} Mo. Le compteur repart le 1er du mois.`,
+              },
+              HttpStatus.PAYMENT_REQUIRED,
+            ),
+          );
+          return;
+        }
+
         callback(null, chunk);
       },
     });

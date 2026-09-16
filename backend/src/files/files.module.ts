@@ -7,6 +7,8 @@ import { FileStorage } from '../storage/file-storage';
 import { EncryptedUploadStorage } from './encrypted-upload.storage';
 import { FilesController } from './files.controller';
 import { FilesService } from './files.service';
+import { QuotaGuard } from './quota.guard';
+import { QuotaService } from './quota.service';
 
 @Module({
   imports: [
@@ -35,7 +37,7 @@ import { FilesService } from './files.service';
     }),
   ],
   controllers: [FilesController],
-  providers: [FilesService],
-  exports: [FilesService],
+  providers: [FilesService, QuotaService, QuotaGuard],
+  exports: [FilesService, QuotaService],
 })
 export class FilesModule {}

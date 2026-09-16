@@ -453,6 +453,127 @@ describe('Fichiers (e2e)', () => {
     });
   });
 
+  describe('Quota mensuel', () => {
+    /** Un contenu texte de la taille demandée, en kilo-octets. */
+    function texteDe(kilooctets: number): string {
+      return 'a'.repeat(kilooctets * 1024);
+    }
+
+    it('expose l\'état du quota', async () => {
+      const cookies = await connecter('alice@example.fr');
+
+      const response = await request(app.getHttpServer())
+        .get('/api/files/quota')
+        .set('Cookie', cookies)
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        plan: 'FREE',
+        usedBytes: 0,
+        limitBytes: 1024 * 1024,
+        remainingBytes: 1024 * 1024,
+        period: expect.stringMatching(/^\d{4}-\d{2}$/) as unknown as string,
+      });
+    });
+
+    it('décompte chaque dépôt du solde', async () => {
+      const cookies = await connecter('alice@example.fr');
+      await deposer(cookies, 'gros.txt', texteDe(300)).expect(201);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/files/quota')
+        .set('Cookie', cookies)
+        .expect(200);
+
+      expect(response.body.usedBytes).toBe(300 * 1024);
+      expect(response.body.remainingBytes).toBe(1024 * 1024 - 300 * 1024);
+    });
+
+    // Le comportement qui donne sa réalité à l'offre gratuite.
+    it('refuse le dépôt qui dépasse le quota, avec un code 402', async () => {
+      const cookies = await connecter('alice@example.fr');
+      await deposer(cookies, 'un.txt', texteDe(600)).expect(201);
+
+      const response = await request(app.getHttpServer())
+        .post('/api/files')
+        .set(...CSRF)
+        .set('Cookie', cookies)
+        .attach('file', Buffer.from(texteDe(600), 'utf8'), 'deux.txt')
+        .expect(402);
+
+      expect(response.body.error).toBe('QUOTA_EXCEEDED');
+      // Le second dépôt n'a rien laissé derrière lui.
+      expect(await prisma.file.count()).toBe(1);
+    });
+
+    // Sans cela, déposer puis effacer en boucle contournerait l'offre.
+    it('ne rend pas de quota quand un fichier est supprimé', async () => {
+      const cookies = await connecter('alice@example.fr');
+      const depot = await deposer(cookies, 'temporaire.txt', texteDe(600)).expect(
+        201,
+      );
+
+      await request(app.getHttpServer())
+        .delete(`/api/files/${depot.body.id}`)
+        .set(...CSRF)
+        .set('Cookie', cookies)
+        .expect(204);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/files/quota')
+        .set('Cookie', cookies)
+        .expect(200);
+
+      expect(response.body.usedBytes).toBe(600 * 1024);
+      expect(await prisma.file.count()).toBe(0);
+    });
+
+    // La bascule se fait en base : c'est la mécanique du quota qui est
+    // démontrée, pas l'encaissement.
+    it('applique un quota plus large à un compte premium', async () => {
+      const cookies = await connecter('alice@example.fr');
+      await prisma.user.update({
+        where: { email: 'alice@example.fr' },
+        data: { plan: 'PREMIUM' },
+      });
+
+      const response = await request(app.getHttpServer())
+        .get('/api/files/quota')
+        .set('Cookie', cookies)
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        plan: 'PREMIUM',
+        limitBytes: 5 * 1024 * 1024,
+      });
+    });
+
+    it('laisse passer un dépôt qu\'un compte gratuit aurait refusé', async () => {
+      const cookies = await connecter('alice@example.fr');
+      await prisma.user.update({
+        where: { email: 'alice@example.fr' },
+        data: { plan: 'PREMIUM' },
+      });
+
+      // 1,5 Mo : au-delà du quota gratuit, en deçà du quota premium.
+      await deposer(cookies, 'volumineux.txt', texteDe(1536)).expect(201);
+    });
+
+    it('compte séparément le quota de chaque utilisateur', async () => {
+      const alice = await connecter('alice@example.fr');
+      await deposer(alice, 'fichier.txt', texteDe(600)).expect(201);
+
+      const bob = await connecter('bob@example.fr');
+
+      const response = await request(app.getHttpServer())
+        .get('/api/files/quota')
+        .set('Cookie', bob)
+        .expect(200);
+
+      expect(response.body.usedBytes).toBe(0);
+    });
+  });
+
   describe('Suppression du compte', () => {
     it('emporte les fichiers de l\'utilisateur', async () => {
       const cookies = await connecter('alice@example.fr');

@@ -186,7 +186,7 @@ npx tsc --noEmit         # vérification de types
 | Dépôt, liste et suppression de fichiers | ✅ implémenté et testé |
 | Partages, révocation et téléchargement | ⬜ schéma en base, routes à écrire |
 
-**170 tests au vert** (100 unitaires, 70 end-to-end), analyse statique et
+**177 tests au vert** (100 unitaires, 77 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 ---
@@ -464,6 +464,7 @@ ouverte à tous, qu'on ne remarque jamais.
 |---|---|---|
 | `POST` | `/api/files` | Dépose un fichier (`multipart/form-data`, champ `file`) |
 | `GET` | `/api/files` | Liste ses propres fichiers |
+| `GET` | `/api/files/quota` | Volume déposé ce mois-ci et solde restant |
 | `DELETE` | `/api/files/:id` | Supprime un fichier et son contenu |
 
 ### Le chiffrement a lieu pendant la réception
@@ -538,9 +539,42 @@ Un dépôt interrompu, trop volumineux ou d'un format refusé voit son contenu
 partiel **retiré du support** : sans cela, chaque échec laisserait un fichier
 orphelin que personne ne nettoierait.
 
-> **À ne pas confondre avec le quota de l'offre.** Ces 200 Mo sont une limite
-> **par fichier**. L'offre gratuite envisagée parle de 200 Mo **par mois**, ce
-> qui est un contrôle différent — un cumul par compte, qui reste à implémenter.
+### Quota mensuel et offres
+
+Deux offres, portées par le champ `plan` du compte :
+
+| Offre | Volume mensuel | Variable |
+|---|---|---|
+| Gratuite | 200 Mo | `FREE_PLAN_QUOTA_MB` |
+| Payante | 20 Go | `PREMIUM_PLAN_QUOTA_MB` |
+
+Les valeurs sont dans la configuration : ajuster l'offre après un retour
+d'utilisateur ne demande pas de modifier le code.
+
+**Aucun module de paiement.** Le passage en offre payante se fait en écrivant
+`PREMIUM` dans la base. Ce qui est démontré, c'est la **mécanique du quota** —
+brancher un prestataire reviendrait à écrire cette même valeur après une
+transaction réussie.
+
+**Le quota mesure ce qui a été déposé, pas l'espace occupé.** Supprimer un
+fichier ne rend donc pas de quota : sinon, envoyer puis effacer en boucle
+suffirait à contourner l'offre gratuite. Un test le vérifie.
+
+Le compteur vit dans une table `monthly_usage`, une ligne par compte et par
+mois. Aucune remise à zéro n'est à programmer : le mois suivant crée simplement
+une nouvelle ligne.
+
+Un dépassement répond **402 Paiement requis**, et non 413. Le code dit ce dont
+il s'agit : la requête est légitime, c'est l'offre qui est atteinte. Le front
+peut y accrocher sa proposition de passage à l'offre supérieure, là où un 413 ne
+parlerait que de taille.
+
+> **Où le refus a lieu, et pourquoi.** Le contrôle s'applique **pendant** la
+> réception, à l'octet de trop, et non avant l'envoi. Refuser plus tôt sur la
+> foi de la taille annoncée a été essayé puis abandonné : répondre avant que le
+> client ait fini d'envoyer coupe la connexion, et il reçoit une erreur réseau
+> au lieu du message expliquant que son quota est atteint. C'est le même
+> compromis que celui de la taille maximale.
 
 ---
 
@@ -554,6 +588,7 @@ Le schéma commenté est dans [`prisma/schema.prisma`](prisma/schema.prisma).
 | `users` | Comptes | `password_hash` |
 | `files` | Métadonnées des fichiers | `original_name_enc`, `dek_wrapped`, `key_version`, `content_iv`, `content_auth_tag`, `storage_name` |
 | `shares` | Liens de partage | `token_hash`, `recipient_email_enc`, `recipient_email_hmac`, `expires_at`, `revoked` |
+| `monthly_usage` | Quota déposé par mois | `period`, `bytes` (cumul, ne décroît jamais) |
 | `refresh_tokens` | Sessions longues | `token_hash`, `family_id`, `revoked_at`, `replaced_by_id` |
 | `revoked_access_tokens` | Déconnexions | `jti`, `expires_at` |
 
