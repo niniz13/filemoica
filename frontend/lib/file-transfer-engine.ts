@@ -1,41 +1,52 @@
 export const N = 160;
 
-export interface FileCatalogEntry {
-  name: string;
-  ext: string;
-  mb: number;
-  kind: string;
-}
-
-export const CAT: FileCatalogEntry[] = [
-  { name: "lune_teaser_v4.mov", ext: "MOV", mb: 4820, kind: "Video" },
-  { name: "cover_art_8k.psd", ext: "PSD", mb: 1340, kind: "Image" },
-  { name: "stems_master.zip", ext: "ZIP", mb: 912, kind: "Archive" },
-  { name: "contract_signed.pdf", ext: "PDF", mb: 3, kind: "Document" },
-  { name: "shoot_raw_batch_02.zip", ext: "ZIP", mb: 7210, kind: "Photos" },
-  { name: "board_v11.fig", ext: "FIG", mb: 88, kind: "Design" },
-];
-
 export const TILES: Record<string, [string, string]> = {
   MOV: ["#ece9ff", "#5b4bff"],
+  MP4: ["#ece9ff", "#5b4bff"],
   PSD: ["#e6f1ff", "#1f5fa8"],
+  PNG: ["#e6f1ff", "#1f5fa8"],
+  JPG: ["#e6f1ff", "#1f5fa8"],
+  JPEG: ["#e6f1ff", "#1f5fa8"],
   ZIP: ["#efece7", "#6b7178"],
+  RAR: ["#efece7", "#6b7178"],
   PDF: ["#ffeceb", "#d2493c"],
+  DOC: ["#eaf1ff", "#1f5fa8"],
+  DOCX: ["#eaf1ff", "#1f5fa8"],
+  XLS: ["#eafaf1", "#0b6b45"],
+  XLSX: ["#eafaf1", "#0b6b45"],
   FIG: ["#eafaf1", "#0b6b45"],
+  TXT: ["#efece7", "#6b7178"],
 };
 
-export function fmt(mb: number): string {
-  return mb >= 1024 ? (mb / 1024).toFixed(2) + " GB" : mb.toFixed(0) + " MB";
+export const FALLBACK_TILE: [string, string] = ["#efece7", "#6b7178"];
+
+/** Formate un nombre d'octets en unité lisible (B / KB / MB / GB / TB). */
+export function fmtBytes(bytes: number): string {
+  const safe = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = safe;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  const decimals = unitIndex === 0 ? 0 : value < 10 ? 2 : value < 100 ? 1 : 0;
+  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
 }
 
-export type Screen = "signin" | "drop" | "sending" | "sent" | "receive";
+/** Extension d'un nom de fichier, en majuscules, pour la vignette colorée. */
+export function extFromName(name: string): string {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return "FILE";
+  return name.slice(dot + 1).toUpperCase().slice(0, 4);
+}
 
 export interface Packet {
   x: number;
   y: number;
   v: number;
   label: string;
-  mb: number;
+  weight: number;
   rot: number;
   rv: number;
   dead?: boolean;
@@ -106,13 +117,14 @@ export function createEngine(): Engine {
   };
 }
 
-export function dropPacket(engine: Engine, ext: string, mb: number) {
+/** Fait tomber un paquet visuel représentant un vrai fichier déposé. */
+export function dropPacket(engine: Engine, label: string, sizeMB: number) {
   engine.packets.push({
     x: 0.18 + Math.random() * 0.64,
     y: -0.18,
     v: 0,
-    label: ext,
-    mb,
+    label,
+    weight: Math.min(6, 2 + sizeMB / 100),
     rot: (Math.random() - 0.5) * 0.5,
     rv: (Math.random() - 0.5) * 0.03,
   });
@@ -138,36 +150,30 @@ export function splashEngine(engine: Engine, xn: number, power: number, waveInte
   }
 }
 
+/**
+ * Phase de l'animation, découplée de l'écran affiché :
+ * - "signin"  : niveau décoratif fixe, avant connexion.
+ * - "idle"    : reflète l'usage réel du quota (aucun envoi en cours).
+ * - "active"  : reflète `engine.p` (0..1), piloté depuis l'extérieur par la
+ *   progression réelle d'un envoi (XHR upload progress). L'engine ne modifie
+ *   jamais `p` lui-même dans ce mode : c'est l'appelant qui le pousse à jour.
+ */
+export type EnginePhase = "signin" | "idle" | "active";
+
 export interface StepContext {
-  screen: Screen;
-  fileCount: number;
-  draining: boolean;
+  phase: EnginePhase;
+  quotaFraction: number;
 }
 
-export function stepEngine(
-  engine: Engine,
-  dt: number,
-  ctx: StepContext,
-  waveIntensity: number,
-  demoSpeed: number,
-  onSendComplete: () => void,
-) {
+export function stepEngine(engine: Engine, dt: number, ctx: StepContext, waveIntensity: number) {
   const f = Math.min(1, dt / 16.67);
-  const sc = ctx.screen;
   let target = 0.14;
-  if (sc === "signin") target = 0.32;
-  else if (sc === "drop") target = 0.1 + Math.min(0.42, ctx.fileCount * 0.075);
-  else if (sc === "sending") {
-    engine.p = Math.min(1, engine.p + 0.0022 * f * demoSpeed);
-    target = 0.08 + engine.p * 0.8;
-    if (Math.random() < 0.1 * f) dropPacket(engine, "·", 0);
-    if (engine.p >= 1) onSendComplete();
-  } else if (sc === "sent") {
-    engine.p = 1;
-    target = 0.88;
-  } else if (sc === "receive") {
-    if (ctx.draining) engine.p = Math.max(0, engine.p - 0.0024 * f * demoSpeed);
-    target = 0.08 + engine.p * 0.8;
+  if (ctx.phase === "signin") target = 0.32;
+  else if (ctx.phase === "idle") {
+    const frac = Number.isFinite(ctx.quotaFraction) ? Math.max(0, Math.min(1, ctx.quotaFraction)) : 0;
+    target = 0.1 + frac * 0.6;
+  } else if (ctx.phase === "active") {
+    target = 0.08 + Math.max(0, Math.min(1, engine.p)) * 0.8;
   }
   engine.level = engine.level == null ? target : engine.level + (target - engine.level) * 0.045 * f;
 
@@ -182,7 +188,7 @@ export function stepEngine(
     }
     if (pk.y >= sy) {
       pk.dead = true;
-      splashEngine(engine, pk.x, pk.mb ? 4.2 : 1.6, waveIntensity);
+      splashEngine(engine, pk.x, pk.weight, waveIntensity);
     }
   }
   engine.packets = engine.packets.filter((pk) => !pk.dead);
@@ -290,66 +296,17 @@ export function drawEngine(engine: Engine, canvas: HTMLCanvasElement, accent: st
     x.save();
     x.translate(px, py);
     x.rotate(pk.rot);
-    if (pk.mb) {
-      x.fillStyle = "#ffffff";
-      x.strokeStyle = "rgba(91,75,255,0.22)";
-      x.lineWidth = 1;
-      x.beginPath();
-      x.roundRect(-21, -15, 42, 30, 10);
-      x.fill();
-      x.stroke();
-      x.fillStyle = accent;
-      x.font = '500 9.5px "Space Grotesk", sans-serif';
-      x.textAlign = "center";
-      x.fillText(pk.label, 0, 3.5);
-    } else {
-      x.fillStyle = "rgba(91,75,255,0.55)";
-      x.beginPath();
-      x.roundRect(-3, -7, 6, 14, 3);
-      x.fill();
-    }
+    x.fillStyle = "#ffffff";
+    x.strokeStyle = "rgba(91,75,255,0.22)";
+    x.lineWidth = 1;
+    x.beginPath();
+    x.roundRect(-21, -15, 42, 30, 10);
+    x.fill();
+    x.stroke();
+    x.fillStyle = accent;
+    x.font = '500 9.5px "Space Grotesk", sans-serif';
+    x.textAlign = "center";
+    x.fillText(pk.label, 0, 3.5);
     x.restore();
-  }
-}
-
-export function drawQR(canvas: HTMLCanvasElement) {
-  const M = 25;
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const size = 132;
-  canvas.width = size * dpr;
-  canvas.height = size * dpr;
-  const x = canvas.getContext("2d");
-  if (!x) return;
-  x.setTransform(dpr, 0, 0, dpr, 0, 0);
-  x.fillStyle = "#ffffff";
-  x.fillRect(0, 0, size, size);
-  const pad = 6;
-  const cell = (size - pad * 2) / M;
-  let seed = 20240917;
-  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-  const grid: boolean[][] = Array.from({ length: M }, () => Array.from({ length: M }, () => rnd() > 0.52));
-  const finder = (r: number, c: number) => {
-    for (let i = -1; i < 8; i++) {
-      for (let j = -1; j < 8; j++) {
-        const rr = r + i;
-        const cc = c + j;
-        if (rr < 0 || cc < 0 || rr >= M || cc >= M) continue;
-        const edge = i === 0 || i === 6 || j === 0 || j === 6;
-        const core = i >= 2 && i <= 4 && j >= 2 && j <= 4;
-        grid[rr][cc] = i >= 0 && i < 7 && j >= 0 && j < 7 ? edge || core : false;
-      }
-    }
-  };
-  finder(0, 0);
-  finder(0, M - 7);
-  finder(M - 7, 0);
-  for (let i = 0; i < M; i++) {
-    for (let j = 0; j < M; j++) {
-      if (!grid[i][j]) continue;
-      x.fillStyle = "#16181c";
-      x.beginPath();
-      x.roundRect(pad + j * cell, pad + i * cell, cell * 0.94, cell * 0.94, cell * 0.28);
-      x.fill();
-    }
   }
 }
