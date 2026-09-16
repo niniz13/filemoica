@@ -197,7 +197,7 @@ npx tsc --noEmit         # vérification de types
 | Rotation des clés de chiffrement | ✅ implémenté et testé |
 | Journaux, limitation de tentatives, purge | ✅ implémenté et testé |
 
-**257 tests au vert** (128 unitaires, 129 end-to-end), analyse statique et
+**265 tests au vert** (128 unitaires, 137 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 **Le parcours utilisateur est complet** : déposer, partager, télécharger,
@@ -634,8 +634,19 @@ parlerait que de taille.
 | `POST` | `/api/shares` | **session** | Crée un lien |
 | `GET` | `/api/shares` | **session** | Liste ses partages avec leur état |
 | `PATCH` | `/api/shares/:id/revoke` | **session** | Coupe l'accès immédiatement |
-| `GET` | `/api/download/:token/info` | *public* | Décrit le lien sans le consommer |
-| `GET` | `/api/download/:token` | *public* | Télécharge le fichier |
+| `GET` | `/api/download/:token/info` | *public* | Liste les fichiers du lien, sans le consommer |
+| `GET` | `/api/download/:token/file/:fileId` | *public* | Télécharge un fichier du lien |
+
+### Un lien couvre une session de dépôt entière
+
+Un partage porte sur **un ou plusieurs fichiers**, jusqu'à 50. Qui envoie trois
+documents transmet **un seul lien**, pas trois — c'est l'usage attendu d'un
+service de transfert, et cela évite au destinataire de jongler entre des adresses.
+
+Le destinataire ouvre le lien, voit la liste, et récupère les fichiers un par
+un. Il n'y a pas d'archive assemblée côté serveur : elle obligerait à déchiffrer
+et recompresser l'ensemble avant le premier octet envoyé, là où le
+téléchargement fichier par fichier reste en flux continu.
 
 ### Déposer exige un compte, recevoir non
 
@@ -652,51 +663,52 @@ acceptable, dont deux sont à la main du déposant :
 | 32 octets aléatoires, hors de portée d'une attaque par essais | le service |
 | Une durée de vie, de 1 heure à 30 jours | le déposant |
 | Un mot de passe facultatif | le déposant |
-| Un usage unique, avec effacement du fichier | le déposant |
+| Un usage unique, avec effacement des fichiers | le déposant |
 | La révocation, immédiate et à tout moment | le déposant |
 
 ### Le lien à usage unique
 
-Option `burnAfterDownload` à la création. Le lien se consume au **premier
-téléchargement réussi**, et le fichier est alors **effacé du serveur** — base et
-disque — s'il ne lui reste aucun autre lien exploitable.
+Option `burnAfterDownload` à la création. Le lien se consume une fois que
+**tous** ses fichiers ont été téléchargés, et ceux-ci sont alors **effacés du
+serveur** — base et disque — s'il ne leur reste aucun autre lien exploitable.
 
 C'est la garantie la plus forte que le service puisse offrir : *la donnée ne
-survit pas à sa transmission*. Vérifié de bout en bout : après le
-téléchargement, le fichier a disparu du disque, la liste du déposant est vide,
-et le lien répond `404`.
+survit pas à sa transmission*.
 
 **Par défaut un lien reste réutilisable** jusqu'à son expiration ou sa
 révocation : le destinataire peut avoir raté son téléchargement, ou le même lien
 servir à plusieurs personnes. L'usage unique est donc une option, jamais le
 comportement implicite.
 
-Quatre points de conception qui font la différence entre une version correcte et
+Cinq points de conception qui font la différence entre une version correcte et
 une version naïve :
 
-**Le lien est réservé avant l'envoi, pas après.** Deux personnes qui ouvrent le
-lien en même temps ne doivent pas repartir toutes les deux avec le fichier. La
+**Le lien se consume au dernier fichier, pas au premier.** Un lien couvrant trois
+documents et mourant au premier téléchargement serait un piège : le destinataire
+n'en récupérerait qu'un. Chaque fichier est marqué à son passage, et le lien
+n'est consommé qu'une fois la liste épuisée.
+
+**Chaque fichier est réservé avant son envoi.** Deux personnes qui ouvrent le
+même fichier en même temps ne doivent pas repartir toutes les deux avec. La
 réservation est une mise à jour conditionnée à la nullité de la date de
-consommation : la base ne laisse passer qu'un seul gagnant. Un test lance deux
+téléchargement : la base ne laisse passer qu'un seul gagnant. Un test lance deux
 téléchargements simultanés et vérifie qu'il y a exactement un `200` et un `410`.
 
-**Un transfert interrompu rend le lien.** Coupure réseau, onglet fermé : le
-destinataire n'a rien reçu, détruire le fichier serait le pire des deux mondes.
-Le lien n'est définitivement consommé qu'une fois le contenu **entièrement**
-transmis.
+**Un transfert interrompu rend le fichier.** Coupure réseau, onglet fermé : le
+destinataire n'a rien reçu, le compter comme servi serait le pire des deux
+mondes. Un fichier n'est définitivement marqué qu'une fois transmis en entier.
 
-**Le fichier n'est effacé que s'il n'a plus aucun lien exploitable.** Le déposant
+**Un fichier n'est effacé que s'il n'a plus aucun lien exploitable.** Le déposant
 a pu créer plusieurs partages du même fichier ; brûler l'un d'eux ne doit pas
 casser silencieusement les autres.
 
-**Le second essai répond `404`, pas `410`.** Le fichier effacé, la ligne du
-partage disparaît avec lui : il ne reste littéralement rien. C'est cohérent avec
-la promesse, et préférable — on ne peut pas distinguer « déjà utilisé » de « n'a
-jamais existé ». Le `410 SHARE_ALREADY_USED` ne subsiste que quand le fichier
-survit grâce à un autre lien.
+**Le lien consommé répond `410 SHARE_ALREADY_USED`, et non `404`.** Les fichiers
+sont effacés, mais la trace du partage subsiste : le destinataire comprend ce qui
+s'est passé plutôt que de recevoir un « ce lien n'existe pas » déroutant, et le
+déposant voit dans sa liste que le transfert a bien eu lieu.
 
 > **À dire à l'utilisateur avant qu'il coche la case :** l'effacement est
-> irréversible et touche **aussi le déposant**. Le fichier disparaît de sa
+> irréversible et touche **aussi le déposant**. Les fichiers disparaissent de sa
 > propre liste — c'est précisément ce qui est demandé, mais cela doit être
 > annoncé.
 
@@ -733,6 +745,8 @@ conditionne pas l'accès. Il est tout de même chiffré en base.
 | Le partage n'est pas révoqué | `403` | `SHARE_REVOKED` |
 | Le partage n'a pas expiré | `410` | `SHARE_EXPIRED` |
 | Le lien à usage unique n'a pas déjà servi | `410` | `SHARE_ALREADY_USED` |
+| Ce fichier n'a pas déjà été pris sur ce lien | `410` | `FILE_ALREADY_DOWNLOADED` |
+| Le fichier demandé fait partie du lien | `404` | `FILE_NOT_IN_SHARE` |
 | Le mot de passe est fourni, s'il en faut un | `401` | `SHARE_PASSWORD_REQUIRED` |
 | Le mot de passe est le bon | `403` | `SHARE_PASSWORD_INVALID` |
 
@@ -792,7 +806,8 @@ Le schéma commenté est dans [`prisma/schema.prisma`](prisma/schema.prisma).
 |---|---|---|
 | `users` | Comptes | `password_hash` |
 | `files` | Métadonnées des fichiers | `original_name_enc`, `dek_wrapped`, `key_version`, `content_iv`, `content_auth_tag`, `storage_name` |
-| `shares` | Liens de partage | `token_hash`, `recipient_email_enc`, `recipient_email_hmac`, `expires_at`, `revoked` |
+| `shares` | Liens de partage | `owner_id`, `token_hash`, `recipient_email_enc`, `recipient_email_hmac`, `expires_at`, `revoked`, `burn_after_download`, `consumed_at` |
+| `share_files` | Fichiers couverts par un lien | `downloaded_at` (verrou du lien à usage unique) |
 | `monthly_usage` | Quota déposé par mois | `period`, `bytes` (cumul, ne décroît jamais) |
 | `refresh_tokens` | Sessions longues | `token_hash`, `family_id`, `revoked_at`, `replaced_by_id` |
 | `revoked_access_tokens` | Déconnexions | `jti`, `expires_at` |
@@ -1059,7 +1074,8 @@ Les tests les plus significatifs pour l'évaluation :
 | Une révocation coupe l'accès immédiatement | `shares.e2e-spec.ts` |
 | Un lien protégé refuse le téléchargement sans mot de passe | `shares.e2e-spec.ts` |
 | Un lien protégé ne révèle pas ce qu'il contient | `shares.e2e-spec.ts` |
-| Un lien à usage unique efface le fichier du serveur | `shares.e2e-spec.ts` |
+| Un lien à usage unique efface les fichiers du serveur | `shares.e2e-spec.ts` |
+| Un lien reste utilisable tant que tous ses fichiers ne sont pas pris | `shares.e2e-spec.ts` |
 | Deux téléchargements simultanés : un seul passe | `shares.e2e-spec.ts` |
 | Un lien expiré répond 410, pas 404 | `shares.e2e-spec.ts` |
 | La base ne contient aucun jeton de partage en clair | `shares.e2e-spec.ts` |

@@ -15,8 +15,8 @@ import type { ShareStatus } from './dto/share.response';
 
 /** Métadonnées nécessaires pour servir un fichier partagé. */
 export interface GrantedDownload {
+  /** Le lien concerné, nécessaire au suivi des liens à usage unique. */
   shareId: string;
-  fileId: string;
   storageName: string;
   originalName: string;
   sizeBytes: number;
@@ -27,8 +27,31 @@ export interface GrantedDownload {
   burnAfterDownload: boolean;
 }
 
+/** Un fichier tel qu'exposé par un partage. */
+export interface SharedFile {
+  id: string;
+  fileName: string;
+  sizeBytes: number;
+}
+
+const FILE_SELECT = {
+  id: true,
+  storageName: true,
+  originalNameEnc: true,
+  sizeBytes: true,
+  dekWrapped: true,
+  contentIv: true,
+  contentAuthTag: true,
+} as const;
+
 /**
  * Création, révocation et contrôle des liens de partage.
+ *
+ * ## Un lien, une session de dépôt
+ *
+ * Un partage couvre un ou plusieurs fichiers derrière un seul jeton : le
+ * destinataire n'a qu'une seule adresse à ouvrir pour récupérer tout ce qui
+ * lui a été envoyé, plutôt qu'un lien par fichier.
  *
  * ## Le lien se suffit à lui-même
  *
@@ -59,7 +82,7 @@ export class SharesService {
   ) {}
 
   /**
-   * Crée un lien de partage sur un fichier que l'on possède.
+   * Crée un lien de partage sur un ou plusieurs fichiers que l'on possède.
    *
    * @returns Le partage **et** le jeton en clair, seule occasion de le lire.
    */
@@ -67,9 +90,11 @@ export class SharesService {
     ownerId: string,
     input: CreateShareDto,
   ): Promise<{ id: string; token: string; expiresAt: Date; createdAt: Date }> {
-    // Lève 404 si le fichier n'existe pas ou appartient à quelqu'un d'autre :
-    // on ne partage que ce qu'on possède.
-    await this.files.requireOwned(ownerId, input.fileId);
+    // Lève 404 si l'un des fichiers n'existe pas ou appartient à quelqu'un
+    // d'autre : on ne partage que ce qu'on possède, et entièrement.
+    await Promise.all(
+      input.fileIds.map((fileId) => this.files.requireOwned(ownerId, fileId)),
+    );
 
     const token = this.crypto.generateToken();
     const expiresAt = new Date(
@@ -78,7 +103,7 @@ export class SharesService {
 
     const share = await this.prisma.share.create({
       data: {
-        fileId: input.fileId,
+        ownerId,
         tokenHash: this.crypto.hashToken(token),
         // Facultatif, et purement informatif : c'est le jeton qui donne accès.
         recipientEmailEnc: input.recipientEmail
@@ -94,11 +119,16 @@ export class SharesService {
           : null,
         burnAfterDownload: input.burnAfterDownload,
         expiresAt,
+        files: {
+          create: input.fileIds.map((fileId) => ({ fileId })),
+        },
       },
       select: { id: true, expiresAt: true, createdAt: true },
     });
 
-    this.logger.log(`Partage créé : ${share.id} (expire le ${expiresAt.toISOString()})`);
+    this.logger.log(
+      `Partage créé : ${share.id} (${input.fileIds.length} fichier(s), expire le ${expiresAt.toISOString()})`,
+    );
 
     return { ...share, token };
   }
@@ -107,8 +137,7 @@ export class SharesService {
   async listOwnedBy(ownerId: string): Promise<
     {
       id: string;
-      fileId: string;
-      fileName: string;
+      files: SharedFile[];
       recipientEmail?: string;
       protectedByPassword: boolean;
       singleUse: boolean;
@@ -118,11 +147,13 @@ export class SharesService {
     }[]
   > {
     const shares = await this.prisma.share.findMany({
-      where: { file: { ownerId } },
+      // Filtre sur le propriétaire du lien, et non sur celui de ses fichiers :
+      // un lien à usage unique consommé n'a plus de fichier, et disparaîtrait
+      // de cette liste au moment où son créateur veut vérifier le transfert.
+      where: { ownerId },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
-        fileId: true,
         recipientEmailEnc: true,
         passwordHash: true,
         burnAfterDownload: true,
@@ -130,14 +161,17 @@ export class SharesService {
         revoked: true,
         expiresAt: true,
         createdAt: true,
-        file: { select: { originalNameEnc: true } },
+        files: {
+          select: {
+            file: { select: { id: true, originalNameEnc: true, sizeBytes: true } },
+          },
+        },
       },
     });
 
     return shares.map((share) => ({
       id: share.id,
-      fileId: share.fileId,
-      fileName: this.crypto.openToString(share.file.originalNameEnc),
+      files: share.files.map(({ file }) => this.toSharedFile(file)),
       ...(share.recipientEmailEnc
         ? { recipientEmail: this.crypto.openToString(share.recipientEmailEnc) }
         : {}),
@@ -157,12 +191,12 @@ export class SharesService {
    * Idempotent : révoquer deux fois n'est pas une erreur. Un utilisateur qui
    * clique deux fois sur « révoquer » veut avant tout que le lien soit mort.
    *
-   * @throws {NotFoundException} Si le partage n'existe pas ou porte sur le
-   * fichier de quelqu'un d'autre.
+   * @throws {NotFoundException} Si le partage n'existe pas ou porte sur des
+   * fichiers de quelqu'un d'autre.
    */
   async revoke(ownerId: string, shareId: string): Promise<void> {
     const share = await this.prisma.share.findFirst({
-      where: { id: shareId, file: { ownerId } },
+      where: { id: shareId, ownerId },
       select: { id: true, revoked: true },
     });
 
@@ -188,37 +222,51 @@ export class SharesService {
   /**
    * Décrit un lien sans le consommer, pour que le front sache quoi afficher.
    *
-   * Volontairement avare quand le lien est protégé : le nom et la taille du
-   * fichier ne sont révélés qu'une fois le mot de passe franchi. Quelqu'un qui
-   * intercepterait le lien apprendrait sinon ce qu'il contient sans jamais
-   * avoir à le déverrouiller.
+   * Volontairement avare quand le lien est protégé et qu'aucun mot de passe
+   * n'est fourni : la liste des fichiers n'est révélée qu'une fois le mot de
+   * passe franchi. Quelqu'un qui intercepterait le lien apprendrait sinon ce
+   * qu'il contient sans jamais avoir à le déverrouiller.
+   *
+   * Recevoir un mot de passe ici permet au front de le vérifier **une seule
+   * fois** pour tout le partage, plutôt que de le redemander à chaque fichier
+   * téléchargé individuellement.
+   *
+   * @throws {ForbiddenException} `SHARE_PASSWORD_INVALID` si un mot de passe
+   * est fourni mais incorrect — pour que le front le signale immédiatement,
+   * avant toute tentative de téléchargement.
    */
-  async describe(token: string): Promise<{
+  async describe(
+    token: string,
+    password?: string,
+  ): Promise<{
     requiresPassword: boolean;
     singleUse: boolean;
     expiresAt: Date;
-    fileName?: string;
-    sizeBytes?: number;
+    files?: SharedFile[];
   }> {
     const share = await this.findUsable(token);
     const requiresPassword = share.passwordHash !== null;
+
+    if (requiresPassword && password) {
+      await this.verifyPassword(share.passwordHash!, password);
+    }
+
+    const unlocked = !requiresPassword || Boolean(password);
 
     return {
       requiresPassword,
       // Le front doit pouvoir prévenir : « ce lien ne servira qu'une fois ».
       singleUse: share.burnAfterDownload,
       expiresAt: share.expiresAt,
-      ...(requiresPassword
-        ? {}
-        : {
-            fileName: this.crypto.openToString(share.file.originalNameEnc),
-            sizeBytes: share.file.sizeBytes,
-          }),
+      ...(unlocked
+        ? { files: share.files.map((file) => this.toSharedFile(file)) }
+        : {}),
     };
   }
 
   /**
-   * Vérifie qu'un jeton donne bien droit au téléchargement.
+   * Vérifie qu'un jeton donne bien droit au téléchargement d'un fichier
+   * précis parmi ceux du partage.
    *
    * Quatre contrôles, dans cet ordre :
    *
@@ -227,6 +275,9 @@ export class SharesService {
    * 3. il n'a pas expiré — sinon **410** ;
    * 4. le mot de passe, s'il y en a un, est le bon — sinon **401** ou **403**.
    *
+   * Le fichier demandé doit en outre faire partie du partage — sinon **404** :
+   * un jeton valide ne donne accès qu'aux fichiers qu'il couvre.
+   *
    * La révocation est vérifiée avant l'expiration : c'est le geste délibéré du
    * propriétaire, et il doit primer sur une date atteinte entre-temps.
    *
@@ -234,6 +285,7 @@ export class SharesService {
    */
   async authorizeDownload(
     token: string,
+    fileId: string,
     password?: string,
   ): Promise<GrantedDownload> {
     const share = await this.findUsable(token);
@@ -246,88 +298,160 @@ export class SharesService {
         });
       }
 
-      const valid = await this.passwords.verify(share.passwordHash, password);
+      await this.verifyPassword(share.passwordHash, password);
+    }
 
-      if (!valid) {
-        this.logger.warn(
-          'Mot de passe incorrect sur un lien de partage protégé',
-        );
+    const file = share.files.find((candidate) => candidate.id === fileId);
 
-        throw new ForbiddenException({
-          error: 'SHARE_PASSWORD_INVALID',
-          message: 'Mot de passe incorrect.',
-        });
-      }
+    if (!file) {
+      throw new NotFoundException({
+        error: 'FILE_NOT_IN_SHARE',
+        message: 'Ce fichier ne fait pas partie de ce partage.',
+      });
     }
 
     return {
       shareId: share.id,
-      fileId: share.fileId,
-      storageName: share.file.storageName,
-      originalName: this.crypto.openToString(share.file.originalNameEnc),
-      sizeBytes: share.file.sizeBytes,
-      dekWrapped: share.file.dekWrapped,
-      contentIv: share.file.contentIv,
-      contentAuthTag: share.file.contentAuthTag,
+      storageName: file.storageName,
+      originalName: this.crypto.openToString(file.originalNameEnc),
+      sizeBytes: file.sizeBytes,
+      dekWrapped: file.dekWrapped,
+      contentIv: file.contentIv,
+      contentAuthTag: file.contentAuthTag,
       burnAfterDownload: share.burnAfterDownload,
     };
   }
 
   /**
-   * Réserve un lien à usage unique avant d'envoyer le fichier.
+   * Vérifie le mot de passe d'un lien protégé, ou échoue avec le même refus
+   * partout où ce contrôle est fait — à la consultation comme au téléchargement.
    *
-   * La mise à jour est **conditionnée à la nullité de `consumedAt`** : si deux
-   * téléchargements partent en même temps, la base n'en laisse passer qu'un, et
-   * le second se voit refusé. Sans ce verrou, les deux serviraient le fichier
-   * avant que l'un ait eu le temps de marquer le lien comme consommé.
-   *
-   * @throws {GoneException} Si le lien a déjà été consommé.
+   * @throws {ForbiddenException} `SHARE_PASSWORD_INVALID` si le mot de passe est incorrect.
    */
-  async claimSingleUse(shareId: string): Promise<void> {
-    const claimed = await this.prisma.share.updateMany({
-      where: { id: shareId, consumedAt: null },
-      data: { consumedAt: new Date() },
+  private async verifyPassword(
+    passwordHash: string,
+    password: string,
+  ): Promise<void> {
+    const valid = await this.passwords.verify(passwordHash, password);
+
+    if (!valid) {
+      this.logger.warn('Mot de passe incorrect sur un lien de partage protégé');
+
+      throw new ForbiddenException({
+        error: 'SHARE_PASSWORD_INVALID',
+        message: 'Mot de passe incorrect.',
+      });
+    }
+  }
+
+  /** Déchiffre le nom d'un fichier pour l'exposer au propriétaire ou au destinataire. */
+  private toSharedFile(file: {
+    id: string;
+    originalNameEnc: string;
+    sizeBytes: number;
+  }): SharedFile {
+    return {
+      id: file.id,
+      fileName: this.crypto.openToString(file.originalNameEnc),
+      sizeBytes: file.sizeBytes,
+    };
+  }
+
+  /**
+   * Réserve un fichier d'un lien à usage unique avant de l'envoyer.
+   *
+   * La mise à jour est **conditionnée à la nullité de `downloadedAt`** : si deux
+   * téléchargements du même fichier partent en même temps, la base n'en laisse
+   * passer qu'un et le second se voit refusé. Sans ce verrou, les deux
+   * serviraient le fichier avant que l'un ait eu le temps de le marquer.
+   *
+   * La réservation porte sur **le fichier** et non sur le lien : celui-ci en
+   * couvre plusieurs, et le destinataire les récupère l'un après l'autre.
+   *
+   * @throws {GoneException} Si ce fichier a déjà été téléchargé via ce lien.
+   */
+  async claimFile(shareId: string, fileId: string): Promise<void> {
+    const claimed = await this.prisma.shareFile.updateMany({
+      where: { shareId, fileId, downloadedAt: null },
+      data: { downloadedAt: new Date() },
     });
 
     if (claimed.count === 0) {
       throw new GoneException({
-        error: 'SHARE_ALREADY_USED',
-        message: 'Ce lien à usage unique a déjà servi.',
+        error: 'FILE_ALREADY_DOWNLOADED',
+        message: 'Ce fichier a déjà été téléchargé via ce lien à usage unique.',
       });
     }
   }
 
   /**
-   * Rend un lien à usage unique qui n'a pas pu être servi.
+   * Rend un fichier dont le transfert a échoué.
    *
-   * Un transfert interrompu — coupure réseau, onglet fermé — ne doit pas
-   * détruire le fichier : le destinataire n'aurait rien reçu et n'aurait plus
-   * aucun moyen de réessayer.
+   * Une coupure réseau ou un onglet fermé ne doit pas consommer le fichier : le
+   * destinataire n'aurait rien reçu et n'aurait plus aucun moyen de réessayer.
    */
-  async releaseSingleUse(shareId: string): Promise<void> {
-    await this.prisma.share.updateMany({
-      where: { id: shareId },
-      data: { consumedAt: null },
+  async releaseFile(shareId: string, fileId: string): Promise<void> {
+    await this.prisma.shareFile.updateMany({
+      where: { shareId, fileId },
+      data: { downloadedAt: null },
     });
 
     this.logger.warn(
-      `Lien à usage unique ${shareId} libéré : le téléchargement a échoué`,
+      `Fichier ${fileId} du lien ${shareId} libéré : le téléchargement a échoué`,
     );
   }
 
   /**
-   * Achève la consommation d'un lien, une fois le fichier réellement transmis.
+   * Consomme le lien si **tous** ses fichiers ont été téléchargés.
    *
-   * Le fichier n'est effacé que s'il ne lui reste **aucun autre lien
+   * ## Pourquoi « tous » et non « le premier »
+   *
+   * Un lien couvre une session de dépôt entière. Le consumer au premier fichier
+   * téléchargé laisserait un destinataire ayant trois fichiers à récupérer n'en
+   * obtenir qu'un — l'option deviendrait un piège plutôt qu'une protection.
+   *
+   * ## Ce qui se passe ensuite
+   *
+   * Chaque fichier n'est effacé que s'il ne lui reste **aucun autre lien
    * exploitable** : supprimer sans vérifier casserait silencieusement les
    * partages que le déposant aurait créés en parallèle.
    *
-   * @returns `true` si le fichier a été effacé du serveur.
+   * @returns Le nombre de fichiers réellement effacés du serveur.
    */
-  async completeSingleUse(shareId: string, fileId: string): Promise<boolean> {
+  async completeIfFullyDownloaded(shareId: string): Promise<number> {
+    const restants = await this.prisma.shareFile.count({
+      where: { shareId, downloadedAt: null },
+    });
+
+    if (restants > 0) {
+      this.logger.log(
+        `Lien ${shareId} : ${restants} fichier(s) restant(s) avant consommation`,
+      );
+      return 0;
+    }
+
+    const couverts = await this.prisma.shareFile.findMany({
+      where: { shareId },
+      select: { fileId: true },
+    });
+
+    // Le lien est marqué consommé **avant** l'effacement : même si la
+    // suppression échoue, il ne doit plus servir.
+    await this.prisma.share.updateMany({
+      where: { id: shareId, consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+
     this.logger.log(`Lien à usage unique consommé : ${shareId}`);
 
-    return this.files.removeIfNoUsableShare(fileId);
+    let efface = 0;
+    for (const { fileId } of couverts) {
+      if (await this.files.removeIfNoUsableShare(fileId)) {
+        efface += 1;
+      }
+    }
+
+    return efface;
   }
 
   /**
@@ -339,39 +463,29 @@ export class SharesService {
    */
   private async findUsable(token: string): Promise<{
     id: string;
-    fileId: string;
     passwordHash: string | null;
     expiresAt: Date;
     burnAfterDownload: boolean;
-    file: {
+    files: {
+      id: string;
       storageName: string;
       originalNameEnc: string;
       sizeBytes: number;
       dekWrapped: string;
       contentIv: string;
       contentAuthTag: string;
-    };
+    }[];
   }> {
     const share = await this.prisma.share.findUnique({
       where: { tokenHash: this.crypto.hashToken(token) },
       select: {
         id: true,
-        fileId: true,
         revoked: true,
         expiresAt: true,
         passwordHash: true,
         burnAfterDownload: true,
         consumedAt: true,
-        file: {
-          select: {
-            storageName: true,
-            originalNameEnc: true,
-            sizeBytes: true,
-            dekWrapped: true,
-            contentIv: true,
-            contentAuthTag: true,
-          },
-        },
+        files: { select: { file: { select: FILE_SELECT } } },
       },
     });
 
@@ -405,7 +519,13 @@ export class SharesService {
       });
     }
 
-    return share;
+    return {
+      id: share.id,
+      passwordHash: share.passwordHash,
+      expiresAt: share.expiresAt,
+      burnAfterDownload: share.burnAfterDownload,
+      files: share.files.map(({ file }) => file),
+    };
   }
 
   /**

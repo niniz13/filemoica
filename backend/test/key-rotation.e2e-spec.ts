@@ -13,20 +13,20 @@ import { PrismaService } from './../src/prisma/prisma.service';
 import { resetDatabase } from './database';
 
 const PASSWORD = 'phrase-de-passe-suffisamment-longue';
-const CONTENU = 'Document dont le chiffrement doit survivre à la rotation.';
+const CONTENU = 'Document dont le chiffrement doit survivre � la rotation.';
 
-/** Nouvelle clé maître, celle vers laquelle on bascule. */
+/** Nouvelle cl� ma�tre, celle vers laquelle on bascule. */
 const CLE_V2 = 'ab'.repeat(32);
 
 /**
- * Rotation des clés de chiffrement.
+ * Rotation des cl�s de chiffrement.
  *
- * Ces tests portent la promesse la plus technique du projet : **changer la clé
- * maître sans relire un seul fichier**. Ils vérifient donc deux choses
- * indissociables — que les données restent lisibles après la bascule, et que
- * les fichiers sur le disque n'ont pas bougé d'un octet.
+ * Ces tests portent la promesse la plus technique du projet : **changer la cl�
+ * ma�tre sans relire un seul fichier**. Ils v�rifient donc deux choses
+ * indissociables � que les donn�es restent lisibles apr�s la bascule, et que
+ * les fichiers sur le disque n'ont pas boug� d'un octet.
  */
-describe('Rotation des clés (e2e)', () => {
+describe('Rotation des cl�s (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
   let rotation: KeyRotationService;
@@ -46,8 +46,8 @@ describe('Rotation des clés (e2e)', () => {
 
     prisma = app.get(PrismaService);
 
-    // L'application tourne avec la seule clé v1. On construit à côté un service
-    // qui connaît les deux clés : c'est exactement la configuration d'un
+    // L'application tourne avec la seule cl� v1. On construit � c�t� un service
+    // qui conna�t les deux cl�s : c'est exactement la configuration d'un
     // service en cours de rotation.
     const config = app.get(ConfigService);
     cryptoV2 = new CryptoService({
@@ -66,7 +66,7 @@ describe('Rotation des clés (e2e)', () => {
     await app.close();
   });
 
-  /** Inscrit un compte, dépose un fichier et crée un partage. */
+  /** Inscrit un compte, d�pose un fichier et cr�e un partage. */
   async function preparerDonnees(): Promise<{
     fileId: string;
     storageName: string;
@@ -99,7 +99,7 @@ describe('Rotation des clés (e2e)', () => {
       .set(...CSRF)
       .set('Cookie', cookies)
       .send({
-        fileId: depot.body.id,
+        fileIds: [depot.body.id],
         expiresInHours: 24,
         recipientEmail: 'bob@example.fr',
       })
@@ -113,7 +113,7 @@ describe('Rotation des clés (e2e)', () => {
     return { fileId: depot.body.id, storageName: file.storageName };
   }
 
-  it('bascule les données existantes vers la nouvelle clé', async () => {
+  it('bascule les donn�es existantes vers la nouvelle cl�', async () => {
     await preparerDonnees();
 
     const rapport = await rotation.rotate();
@@ -128,7 +128,7 @@ describe('Rotation des clés (e2e)', () => {
     expect(file.originalNameEnc.startsWith('v2.')).toBe(true);
   });
 
-  it('préserve les données : tout reste lisible après la bascule', async () => {
+  it('pr�serve les donn�es : tout reste lisible apr�s la bascule', async () => {
     await preparerDonnees();
     await rotation.rotate();
 
@@ -142,7 +142,7 @@ describe('Rotation des clés (e2e)', () => {
   });
 
   // La promesse centrale du chiffrement enveloppe : la rotation ne relit pas
-  // les fichiers. Sur un volume réel, c'est la différence entre quelques
+  // les fichiers. Sur un volume r�el, c'est la diff�rence entre quelques
   // secondes et plusieurs heures.
   it('ne touche pas au fichier sur le disque', async () => {
     const { storageName } = await preparerDonnees();
@@ -154,8 +154,8 @@ describe('Rotation des clés (e2e)', () => {
     expect(apres.equals(avant)).toBe(true);
   });
 
-  // Et malgré cela, le contenu reste déchiffrable — avec la clé re-scellée.
-  it('laisse le contenu déchiffrable avec la clé re-scellée', async () => {
+  // Et malgr� cela, le contenu reste d�chiffrable � avec la cl� re-scell�e.
+  it('laisse le contenu d�chiffrable avec la cl� re-scell�e', async () => {
     const { storageName } = await preparerDonnees();
     await rotation.rotate();
 
@@ -176,7 +176,7 @@ describe('Rotation des clés (e2e)', () => {
     expect(clair.toString('utf8')).toBe(CONTENU);
   });
 
-  it('ne réécrit rien lors d\'une seconde exécution', async () => {
+  it('ne r��crit rien lors d\'une seconde ex�cution', async () => {
     await preparerDonnees();
     await rotation.rotate();
 
@@ -194,13 +194,13 @@ describe('Rotation des clés (e2e)', () => {
     expect(rapport.dryRun).toBe(true);
     expect(rapport.files.rewrapped).toBe(1);
 
-    // Compté, mais pas touché.
+    // Compt�, mais pas touch�.
     const file = await prisma.file.findFirstOrThrow();
     expect(file.keyVersion).toBe('v1');
     expect(file.dekWrapped.startsWith('v1.')).toBe(true);
   });
 
-  it('gère un partage sans destinataire', async () => {
+  it('g�re un partage sans destinataire', async () => {
     await preparerDonnees();
     await prisma.share.updateMany({
       data: { recipientEmailEnc: null, recipientEmailHmac: null },

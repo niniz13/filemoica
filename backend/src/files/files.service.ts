@@ -134,7 +134,9 @@ export class FilesService {
   async removeIfNoUsableShare(fileId: string): Promise<boolean> {
     const exploitables = await this.prisma.share.count({
       where: {
-        fileId,
+        // Un partage couvre plusieurs fichiers : on passe par la table de
+        // jointure plutôt que par une colonne, qui n'existe plus.
+        files: { some: { fileId } },
         revoked: false,
         consumedAt: null,
         expiresAt: { gt: new Date() },

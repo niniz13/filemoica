@@ -14,13 +14,15 @@ const ALICE = 'alice@example.fr';
 const BOB = 'bob@example.fr';
 const CAROL = 'carol@example.fr';
 const CONTENU = 'Contrat signé — montant : 42 000 euros.';
+const JETON_INCONNU = '00000000-0000-4000-8000-000000000000';
 
 /**
  * Partage, révocation et téléchargement.
  *
  * C'est le parcours complet du service et la démonstration de la soutenance :
- * Alice dépose un fichier, en tire un lien, le transmet — et le destinataire le
- * récupère **sans compte**. Puis Alice révoque, et le lien meurt.
+ * Alice dépose un ou plusieurs fichiers, en tire un seul lien pour toute la
+ * session, le transmet — et le destinataire les récupère **sans compte**.
+ * Puis Alice révoque, et le lien meurt.
  *
  * Ces tests portent la preuve du critère « accès vérifiés » : chaque refus est
  * vérifié séparément, avec son propre code.
@@ -69,21 +71,21 @@ describe('Partages (e2e)', () => {
   }
 
   /** Dépose un fichier et renvoie son identifiant. */
-  async function deposer(cookies: string[]): Promise<string> {
+  async function deposer(cookies: string[], nom = 'contrat.txt'): Promise<string> {
     const response = await request(app.getHttpServer())
       .post('/api/files')
       .set(...CSRF)
       .set('Cookie', cookies)
-      .attach('file', Buffer.from(CONTENU, 'utf8'), 'contrat.txt')
+      .attach('file', Buffer.from(CONTENU, 'utf8'), nom)
       .expect(201);
 
     return response.body.id;
   }
 
-  /** Crée un partage et renvoie son identifiant et son jeton. */
+  /** Crée un partage sur un ou plusieurs fichiers et renvoie son identifiant et son jeton. */
   async function partager(
     cookies: string[],
-    fileId: string,
+    fileIds: string | string[],
     options: {
       recipientEmail?: string;
       expiresInHours?: number;
@@ -95,10 +97,19 @@ describe('Partages (e2e)', () => {
       .post('/api/shares')
       .set(...CSRF)
       .set('Cookie', cookies)
-      .send({ fileId, expiresInHours: 72, ...options })
+      .send({
+        fileIds: Array.isArray(fileIds) ? fileIds : [fileIds],
+        expiresInHours: 72,
+        ...options,
+      })
       .expect(201);
 
     return { id: response.body.id, token: response.body.token };
+  }
+
+  /** URL de téléchargement d'un fichier précis d'un partage. */
+  function telechargement(token: string, fileId: string): string {
+    return `/api/download/${token}/file/${fileId}`;
   }
 
   describe('Parcours complet', () => {
@@ -106,18 +117,60 @@ describe('Partages (e2e)', () => {
     // n'en a pas besoin.
     it('un inconnu sans compte télécharge le contenu exact', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice));
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId);
 
       const download = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(200);
 
       expect(download.body.toString('utf8')).toBe(CONTENU);
     });
 
+    it('couvre plusieurs fichiers derrière un seul jeton', async () => {
+      const alice = await connecter(ALICE);
+      const fichierA = await deposer(alice, 'a.txt');
+      const fichierB = await deposer(alice, 'b.txt');
+      const { token } = await partager(alice, [fichierA, fichierB]);
+
+      const info = await request(app.getHttpServer())
+        .get(`/api/download/${token}/info`)
+        .expect(200);
+
+      expect(info.body.files).toHaveLength(2);
+      expect(info.body.files.map((f: { fileName: string }) => f.fileName).sort()).toEqual([
+        'a.txt',
+        'b.txt',
+      ]);
+
+      const telechargementA = await request(app.getHttpServer())
+        .get(telechargement(token, fichierA))
+        .expect(200);
+      expect(telechargementA.body.toString('utf8')).toBe(CONTENU);
+
+      const telechargementB = await request(app.getHttpServer())
+        .get(telechargement(token, fichierB))
+        .expect(200);
+      expect(telechargementB.body.toString('utf8')).toBe(CONTENU);
+    });
+
+    it('refuse de télécharger un fichier qui ne fait pas partie du partage', async () => {
+      const alice = await connecter(ALICE);
+      const partage = await deposer(alice, 'partage.txt');
+      const horsPartage = await deposer(alice, 'hors-partage.txt');
+      const { token } = await partager(alice, partage);
+
+      const response = await request(app.getHttpServer())
+        .get(telechargement(token, horsPartage))
+        .expect(404);
+
+      expect(response.body.error).toBe('FILE_NOT_IN_SHARE');
+    });
+
     it('décrit le lien avant téléchargement, sans compte', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice));
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId);
 
       const info = await request(app.getHttpServer())
         .get(`/api/download/${token}/info`)
@@ -125,17 +178,17 @@ describe('Partages (e2e)', () => {
 
       expect(info.body).toMatchObject({
         requiresPassword: false,
-        fileName: 'contrat.txt',
-        sizeBytes: Buffer.byteLength(CONTENU, 'utf8'),
+        files: [{ fileName: 'contrat.txt', sizeBytes: Buffer.byteLength(CONTENU, 'utf8') }],
       });
     });
 
     it('force l\'enregistrement plutôt que l\'affichage', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice));
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId);
 
       const download = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(200);
 
       expect(download.headers['content-disposition']).toMatch(/^attachment;/);
@@ -146,10 +199,11 @@ describe('Partages (e2e)', () => {
     // Le jeton étant le seul secret, il ne doit pas s'échapper vers un tiers.
     it('empêche le lien de fuiter par le référent ou un cache', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice));
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId);
 
       const download = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(200);
 
       expect(download.headers['referrer-policy']).toBe('no-referrer');
@@ -158,10 +212,11 @@ describe('Partages (e2e)', () => {
 
     it('conserve le nom d\'origine dans l\'en-tête', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice));
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId);
 
       const download = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(200);
 
       expect(download.headers['content-disposition']).toContain('contrat.txt');
@@ -173,12 +228,11 @@ describe('Partages (e2e)', () => {
 
     it('refuse le téléchargement sans mot de passe — 401', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice), {
-        password: MOT_DE_PASSE,
-      });
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId, { password: MOT_DE_PASSE });
 
       const response = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(401);
 
       expect(response.body.error).toBe('SHARE_PASSWORD_REQUIRED');
@@ -186,12 +240,11 @@ describe('Partages (e2e)', () => {
 
     it('refuse un mauvais mot de passe — 403', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice), {
-        password: MOT_DE_PASSE,
-      });
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId, { password: MOT_DE_PASSE });
 
       const response = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .set('X-Share-Password', 'pas-le-bon')
         .expect(403);
 
@@ -200,12 +253,11 @@ describe('Partages (e2e)', () => {
 
     it('accepte le bon mot de passe', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice), {
-        password: MOT_DE_PASSE,
-      });
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId, { password: MOT_DE_PASSE });
 
       const download = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .set('X-Share-Password', MOT_DE_PASSE)
         .expect(200);
 
@@ -213,19 +265,42 @@ describe('Partages (e2e)', () => {
     });
 
     // Un lien intercepté ne doit pas révéler ce qu'il contient.
-    it('ne divulgue pas le nom du fichier avant le mot de passe', async () => {
+    it('ne divulgue pas la liste des fichiers avant le mot de passe', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice), {
-        password: MOT_DE_PASSE,
-      });
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId, { password: MOT_DE_PASSE });
 
       const info = await request(app.getHttpServer())
         .get(`/api/download/${token}/info`)
         .expect(200);
 
       expect(info.body.requiresPassword).toBe(true);
-      expect(info.body.fileName).toBeUndefined();
-      expect(info.body.sizeBytes).toBeUndefined();
+      expect(info.body.files).toBeUndefined();
+    });
+
+    it('révèle la liste des fichiers à la consultation si le bon mot de passe est fourni', async () => {
+      const alice = await connecter(ALICE);
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId, { password: MOT_DE_PASSE });
+
+      const info = await request(app.getHttpServer())
+        .get(`/api/download/${token}/info`)
+        .set('X-Share-Password', MOT_DE_PASSE)
+        .expect(200);
+
+      expect(info.body.files).toMatchObject([{ fileName: 'contrat.txt' }]);
+    });
+
+    it('refuse la consultation si un mot de passe erroné est fourni', async () => {
+      const alice = await connecter(ALICE);
+      const { token } = await partager(alice, await deposer(alice), { password: MOT_DE_PASSE });
+
+      const response = await request(app.getHttpServer())
+        .get(`/api/download/${token}/info`)
+        .set('X-Share-Password', 'pas-le-bon')
+        .expect(403);
+
+      expect(response.body.error).toBe('SHARE_PASSWORD_INVALID');
     });
 
     it('stocke le mot de passe haché, jamais en clair', async () => {
@@ -260,7 +335,7 @@ describe('Partages (e2e)', () => {
         .post('/api/shares')
         .set(...CSRF)
         .set('Cookie', alice)
-        .send({ fileId, expiresInHours: 24, password: 'court' })
+        .send({ fileIds: [fileId], expiresInHours: 24, password: 'court' })
         .expect(400);
     });
   });
@@ -311,10 +386,38 @@ describe('Partages (e2e)', () => {
         .post('/api/shares')
         .set(...CSRF)
         .set('Cookie', bob)
-        .send({ fileId, recipientEmail: CAROL, expiresInHours: 24 })
+        .send({ fileIds: [fileId], recipientEmail: CAROL, expiresInHours: 24 })
         .expect(404);
 
       expect(response.body.error).toBe('FILE_NOT_FOUND');
+    });
+
+    it('refuse le partage si un seul des fichiers appartient à autrui', async () => {
+      const alice = await connecter(ALICE);
+      const aliceFileId = await deposer(alice);
+
+      const bob = await connecter(BOB);
+      const bobFileId = await deposer(bob);
+
+      const response = await request(app.getHttpServer())
+        .post('/api/shares')
+        .set(...CSRF)
+        .set('Cookie', bob)
+        .send({ fileIds: [bobFileId, aliceFileId], expiresInHours: 24 })
+        .expect(404);
+
+      expect(response.body.error).toBe('FILE_NOT_FOUND');
+    });
+
+    it('refuse une liste de fichiers vide', async () => {
+      const alice = await connecter(ALICE);
+
+      await request(app.getHttpServer())
+        .post('/api/shares')
+        .set(...CSRF)
+        .set('Cookie', alice)
+        .send({ fileIds: [], expiresInHours: 24 })
+        .expect(400);
     });
 
     it.each([
@@ -329,7 +432,7 @@ describe('Partages (e2e)', () => {
         .post('/api/shares')
         .set(...CSRF)
         .set('Cookie', alice)
-        .send({ fileId, recipientEmail: BOB, expiresInHours })
+        .send({ fileIds: [fileId], recipientEmail: BOB, expiresInHours })
         .expect(400);
     });
 
@@ -341,101 +444,110 @@ describe('Partages (e2e)', () => {
         .post('/api/shares')
         .set(...CSRF)
         .set('Cookie', alice)
-        .send({ fileId, recipientEmail: 'pas-un-email', expiresInHours: 24 })
+        .send({ fileIds: [fileId], recipientEmail: 'pas-un-email', expiresInHours: 24 })
         .expect(400);
     });
   });
 
   describe('Lien à usage unique', () => {
-    it('sert le fichier au premier téléchargement', async () => {
+    it('sert chaque fichier du lien', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice), {
-        burnAfterDownload: true,
-      });
-
-      const download = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
-        .expect(200);
-
-      expect(download.body.toString('utf8')).toBe(CONTENU);
-    });
-
-    // Le fichier ayant été effacé, la ligne du partage a disparu avec lui : il
-    // ne reste littéralement rien, d'où le 404 plutôt qu'un 410. C'est même
-    // préférable — on ne peut pas distinguer « déjà utilisé » de « n'a jamais
-    // existé ».
-    it('refuse le second téléchargement — 404, plus rien n\'existe', async () => {
-      const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice), {
+      const un = await deposer(alice, 'un.txt');
+      const deux = await deposer(alice, 'deux.txt');
+      const { token } = await partager(alice, [un, deux], {
         burnAfterDownload: true,
       });
 
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, un))
         .expect(200);
-
-      const second = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
-        .expect(404);
-
-      expect(second.body.error).toBe('SHARE_NOT_FOUND');
+      await request(app.getHttpServer())
+        .get(telechargement(token, deux))
+        .expect(200);
     });
 
-    // Quand le fichier survit — parce qu'un autre lien l'utilise — la ligne du
-    // partage reste, et on peut dire précisément ce qui s'est passé.
-    it('répond 410 sur un lien consommé dont le fichier survit', async () => {
+    // Le comportement décidé avec le passage au multi-fichiers : consumer au
+    // premier téléchargement laisserait un destinataire ayant plusieurs
+    // fichiers n'en récupérer qu'un.
+    it('reste utilisable tant que tous les fichiers n\'ont pas été pris', async () => {
       const alice = await connecter(ALICE);
-      const fileId = await deposer(alice);
-      const jetable = await partager(alice, fileId, {
+      const un = await deposer(alice, 'un.txt');
+      const deux = await deposer(alice, 'deux.txt');
+      const { token } = await partager(alice, [un, deux], {
         burnAfterDownload: true,
       });
-      await partager(alice, fileId);
 
       await request(app.getHttpServer())
-        .get(`/api/download/${jetable.token}`)
+        .get(telechargement(token, un))
+        .expect(200);
+
+      // Le lien vit encore : le second fichier reste accessible.
+      const info = await request(app.getHttpServer())
+        .get(`/api/download/${token}/info`)
+        .expect(200);
+      expect(info.body.singleUse).toBe(true);
+    });
+
+    it('refuse de reprendre un fichier déjà téléchargé — 410', async () => {
+      const alice = await connecter(ALICE);
+      const un = await deposer(alice, 'un.txt');
+      const deux = await deposer(alice, 'deux.txt');
+      const { token } = await partager(alice, [un, deux], {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, un))
         .expect(200);
 
       const second = await request(app.getHttpServer())
-        .get(`/api/download/${jetable.token}`)
+        .get(telechargement(token, un))
         .expect(410);
 
-      expect(second.body.error).toBe('SHARE_ALREADY_USED');
+      expect(second.body.error).toBe('FILE_ALREADY_DOWNLOADED');
     });
 
-    // La promesse forte du service : la donnée ne survit pas à sa transmission.
-    it('efface le fichier du serveur après le téléchargement', async () => {
+    // La promesse forte : la donnée ne survit pas à sa transmission.
+    it('efface tous les fichiers une fois le dernier téléchargé', async () => {
       const alice = await connecter(ALICE);
-      const fileId = await deposer(alice);
+      const un = await deposer(alice, 'un.txt');
+      const deux = await deposer(alice, 'deux.txt');
+      const { token } = await partager(alice, [un, deux], {
+        burnAfterDownload: true,
+      });
 
-      const stocke = await prisma.file.findUniqueOrThrow({
-        where: { id: fileId },
+      const stockes = await prisma.file.findMany({
         select: { storageName: true },
       });
 
-      const { token } = await partager(alice, fileId, {
-        burnAfterDownload: true,
-      });
+      await request(app.getHttpServer())
+        .get(telechargement(token, un))
+        .expect(200);
+      expect(await prisma.file.count()).toBe(2);
 
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, deux))
         .expect(200);
 
       // Ni en base...
-      expect(await prisma.file.count({ where: { id: fileId } })).toBe(0);
+      expect(await prisma.file.count()).toBe(0);
       // ...ni sur le disque.
-      await expect(
-        readFile(join(storageRoot, stocke.storageName)),
-      ).rejects.toThrow();
+      for (const { storageName } of stockes) {
+        await expect(
+          readFile(join(storageRoot, storageName)),
+        ).rejects.toThrow();
+      }
     });
 
     it('disparaît aussi de la liste du déposant', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice), {
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier, {
         burnAfterDownload: true,
       });
 
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fichier))
         .expect(200);
 
       const fichiers = await request(app.getHttpServer())
@@ -446,31 +558,75 @@ describe('Partages (e2e)', () => {
       expect(fichiers.body).toEqual([]);
     });
 
+    // Les fichiers sont effacés, mais la ligne du partage subsiste, marquée
+    // consommée : le déposant voit dans sa liste que le lien a bien servi, et
+    // le destinataire reçoit un message qui explique ce qui s'est passé plutôt
+    // qu'un « ce lien n'existe pas » déroutant.
+    it('refuse le lien une fois consommé — 410, en disant pourquoi', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier, {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(200);
+
+      const second = await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(410);
+
+      expect(second.body.error).toBe('SHARE_ALREADY_USED');
+    });
+
+    it('montre le partage comme consommé au déposant', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { id, token } = await partager(alice, fichier, {
+        burnAfterDownload: true,
+      });
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(200);
+
+      const liste = await request(app.getHttpServer())
+        .get('/api/shares')
+        .set('Cookie', alice)
+        .expect(200);
+
+      const partage = (liste.body as { id: string; status: string }[]).find(
+        (candidat) => candidat.id === id,
+      );
+      expect(partage?.status).toBe('CONSUMED');
+    });
+
     // Sans cette vérification, brûler un lien détruirait silencieusement les
     // autres partages du même fichier.
     it('conserve le fichier s\'il lui reste un autre lien exploitable', async () => {
       const alice = await connecter(ALICE);
-      const fileId = await deposer(alice);
+      const fichier = await deposer(alice);
 
-      const jetable = await partager(alice, fileId, {
+      const jetable = await partager(alice, fichier, {
         burnAfterDownload: true,
       });
-      const durable = await partager(alice, fileId);
+      const durable = await partager(alice, fichier);
 
       await request(app.getHttpServer())
-        .get(`/api/download/${jetable.token}`)
+        .get(telechargement(jetable.token, fichier))
         .expect(200);
 
-      // Le fichier est toujours là, et l'autre lien fonctionne encore.
-      expect(await prisma.file.count({ where: { id: fileId } })).toBe(1);
+      expect(await prisma.file.count()).toBe(1);
       await request(app.getHttpServer())
-        .get(`/api/download/${durable.token}`)
+        .get(telechargement(durable.token, fichier))
         .expect(200);
     });
 
     it('signale au destinataire que le lien ne servira qu\'une fois', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice), {
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier, {
         burnAfterDownload: true,
       });
 
@@ -481,16 +637,18 @@ describe('Partages (e2e)', () => {
       expect(info.body.singleUse).toBe(true);
     });
 
-    // Deux personnes ouvrent le lien en même temps : une seule doit l'obtenir.
+    // Deux personnes ouvrent le même fichier en même temps : une seule doit
+    // l'obtenir.
     it('ne laisse passer qu\'un seul téléchargement simultané', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice), {
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier, {
         burnAfterDownload: true,
       });
 
       const [un, deux] = await Promise.all([
-        request(app.getHttpServer()).get(`/api/download/${token}`),
-        request(app.getHttpServer()).get(`/api/download/${token}`),
+        request(app.getHttpServer()).get(telechargement(token, fichier)),
+        request(app.getHttpServer()).get(telechargement(token, fichier)),
       ]);
 
       const codes = [un.status, deux.status].sort((a, b) => a - b);
@@ -499,32 +657,33 @@ describe('Partages (e2e)', () => {
 
     it('reste un lien ordinaire quand l\'option n\'est pas demandée', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice));
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier);
 
-      // Deux téléchargements de suite, sans encombre.
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fichier))
         .expect(200);
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fichier))
         .expect(200);
     });
 
     it('combine usage unique et mot de passe', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice), {
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier, {
         burnAfterDownload: true,
         password: 'secret-du-lien',
       });
 
-      // Un essai raté ne doit pas consumer le lien.
+      // Un essai raté ne doit pas consumer le fichier.
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fichier))
         .set('X-Share-Password', 'mauvais')
         .expect(403);
 
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fichier))
         .set('X-Share-Password', 'secret-du-lien')
         .expect(200);
     });
@@ -533,7 +692,7 @@ describe('Partages (e2e)', () => {
   describe('Contrôles d\'accès au téléchargement', () => {
     it('refuse un jeton inconnu — 404', async () => {
       const response = await request(app.getHttpServer())
-        .get('/api/download/jeton-invente-de-toutes-pieces')
+        .get(telechargement('jeton-invente-de-toutes-pieces', JETON_INCONNU))
         .expect(404);
 
       expect(response.body.error).toBe('SHARE_NOT_FOUND');
@@ -541,7 +700,8 @@ describe('Partages (e2e)', () => {
 
     it('refuse un lien expiré — 410', async () => {
       const alice = await connecter(ALICE);
-      const { id, token } = await partager(alice, await deposer(alice));
+      const fileId = await deposer(alice);
+      const { id, token } = await partager(alice, fileId);
 
       // On ramène l'expiration dans le passé plutôt que d'attendre trois jours.
       await prisma.share.update({
@@ -550,7 +710,7 @@ describe('Partages (e2e)', () => {
       });
 
       const response = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(410);
 
       expect(response.body.error).toBe('SHARE_EXPIRED');
@@ -590,7 +750,7 @@ describe('Partages (e2e)', () => {
       await request(app.getHttpServer())
         .post('/api/shares')
         .set(...CSRF)
-        .send({ fileId: '3f2b8c1e-9d4a-4f6b-8e2c-7a1d5b3c9e0f' })
+        .send({ fileIds: ['3f2b8c1e-9d4a-4f6b-8e2c-7a1d5b3c9e0f'] })
         .expect(401);
     });
   });
@@ -599,11 +759,12 @@ describe('Partages (e2e)', () => {
     // La démonstration « je retire l'accès » de la soutenance.
     it('coupe l\'accès immédiatement', async () => {
       const alice = await connecter(ALICE);
-      const { id, token } = await partager(alice, await deposer(alice));
+      const fileId = await deposer(alice);
+      const { id, token } = await partager(alice, fileId);
 
       // Le lien fonctionne...
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(200);
 
       await request(app.getHttpServer())
@@ -614,7 +775,7 @@ describe('Partages (e2e)', () => {
 
       // ...et ne fonctionne plus, sans que le lien ait changé.
       const response = await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(403);
 
       expect(response.body.error).toBe('SHARE_REVOKED');
@@ -639,7 +800,8 @@ describe('Partages (e2e)', () => {
 
     it('n\'est possible que pour le propriétaire du fichier', async () => {
       const alice = await connecter(ALICE);
-      const { id, token } = await partager(alice, await deposer(alice));
+      const fileId = await deposer(alice);
+      const { id, token } = await partager(alice, fileId);
 
       const bob = await connecter(BOB);
 
@@ -651,7 +813,7 @@ describe('Partages (e2e)', () => {
 
       // Le partage est toujours actif : Bob n'a rien pu casser.
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(200);
     });
 
@@ -695,7 +857,7 @@ describe('Partages (e2e)', () => {
       expect(parId[revoque.id]).toBe('REVOKED');
     });
 
-    it('déchiffre le nom du fichier et l\'email du destinataire', async () => {
+    it('déchiffre le nom des fichiers et l\'email du destinataire', async () => {
       const alice = await connecter(ALICE);
       await partager(alice, await deposer(alice), { recipientEmail: BOB });
 
@@ -705,7 +867,7 @@ describe('Partages (e2e)', () => {
         .expect(200);
 
       expect(response.body[0]).toMatchObject({
-        fileName: 'contrat.txt',
+        files: [{ fileName: 'contrat.txt' }],
         recipientEmail: BOB,
       });
     });
@@ -714,10 +876,11 @@ describe('Partages (e2e)', () => {
     // encore à qui on le transmettra.
     it('accepte un partage sans destinataire indiqué', async () => {
       const alice = await connecter(ALICE);
-      const { token } = await partager(alice, await deposer(alice));
+      const fileId = await deposer(alice);
+      const { token } = await partager(alice, fileId);
 
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(200);
 
       const liste = await request(app.getHttpServer())
@@ -756,7 +919,7 @@ describe('Partages (e2e)', () => {
         .expect(204);
 
       await request(app.getHttpServer())
-        .get(`/api/download/${token}`)
+        .get(telechargement(token, fileId))
         .expect(404);
     });
   });
