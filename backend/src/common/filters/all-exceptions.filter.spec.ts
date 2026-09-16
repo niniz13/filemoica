@@ -130,6 +130,35 @@ describe('AllExceptionsFilter', () => {
     });
   });
 
+  // Une première version journalisait l'URL brute : le jeton d'un lien de
+  // partage se retrouvait donc dans les logs, alors même que le journal de
+  // requêtes le masquait de son côté.
+  it('ne journalise jamais le jeton d\'un lien de partage', () => {
+    const jeton = 'k3Jv8Qw2_pLm9XcR4tYnB6dFgH1sZaE7';
+    const debugSpy = jest.spyOn(filter['logger'], 'debug');
+
+    const response = {
+      status: () => response,
+      json: () => response,
+    };
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => response,
+        getRequest: () => ({
+          method: 'GET',
+          url: `/api/download/${jeton}`,
+          originalUrl: `/api/download/${jeton}`,
+        }),
+      }),
+    } as unknown as ArgumentsHost;
+
+    filter.catch(new NotFoundException('Introuvable.'), host);
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.not.stringContaining(jeton) as unknown as string,
+    );
+  });
+
   it('loggue la trace complète des erreurs serveur, côté serveur uniquement', () => {
     const { host } = createHost();
     const logSpy = jest.spyOn(filter['logger'], 'error');

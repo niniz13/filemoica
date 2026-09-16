@@ -18,6 +18,8 @@
     "db:migrate:test": "node scripts/migrate-test-db.js",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
+    "keys:rotate": "node dist/rotate-keys.js",
+    "tokens:purge": "node dist/purge-tokens.js",
     "deploy": "nest deploy",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",

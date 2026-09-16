@@ -24,6 +24,7 @@ qu'on ne confonde jamais l'intention et le code qui tourne.
 - [Authentification](#authentification)
 - [Fichiers](#fichiers)
 - [Partages et téléchargement](#partages-et-téléchargement)
+- [Exploitation](#exploitation)
 - [Modèle de données](#modèle-de-données)
 - [Supervision et incident](#supervision-et-incident)
 - [Contrats avec le reste de l'équipe](#contrats-avec-le-reste-de-léquipe)
@@ -175,6 +176,8 @@ npx tsc --noEmit         # vérification de types
 | `npm run db:migrate:test` | Applique les migrations sur la base de test |
 | `npm run db:deploy` | Applique les migrations sans en créer (production) |
 | `npm run db:studio` | Interface de consultation de la base |
+| `npm run keys:rotate` | Bascule les données vers la nouvelle clé maître (`-- --dry-run` pour simuler) |
+| `npm run tokens:purge` | Supprime les jetons expirés |
 
 ---
 
@@ -191,8 +194,10 @@ npx tsc --noEmit         # vérification de types
 | Dépôt, liste et suppression de fichiers | ✅ implémenté et testé |
 | Quota mensuel et offres | ✅ implémenté et testé |
 | Partages, révocation et téléchargement | ✅ implémenté et testé |
+| Rotation des clés de chiffrement | ✅ implémenté et testé |
+| Journaux, limitation de tentatives, purge | ✅ implémenté et testé |
 
-**221 tests au vert** (100 unitaires, 121 end-to-end), analyse statique et
+**257 tests au vert** (128 unitaires, 129 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 **Le parcours utilisateur est complet** : déposer, partager, télécharger,
@@ -300,10 +305,45 @@ de relire et re-chiffrer tous les fichiers. Ici on ne re-chiffre que les DEK,
 quelques dizaines d'octets chacune : les fichiers ne sont pas touchés. C'est le
 modèle employé par AWS KMS et Google Cloud KMS.
 
-La bascule est déjà fonctionnelle : ajouter `ENCRYPTION_KEY_V2` à la
+La version de clé voyage avec chaque donnée : ajouter `ENCRYPTION_KEY_V2` à la
 configuration suffit à chiffrer les nouvelles données en v2 tout en continuant à
-lire celles en v1, **sans changement de code**. La version de clé voyage avec
-chaque donnée.
+lire celles en v1, **sans changement de code**.
+
+### Faire tourner les clés
+
+```bash
+# 1. Générer la nouvelle clé
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# 2. L'ajouter en ENCRYPTION_KEY_V2, SANS retirer ENCRYPTION_KEY_V1
+
+# 3. Simuler
+npm run keys:rotate -- --dry-run
+
+# 4. Exécuter
+npm run keys:rotate
+
+# 5. Rapport à zéro reste → retirer ENCRYPTION_KEY_V1
+```
+
+**Mesuré sur la base de développement : 4 fichiers et 1 partage re-scellés en
+101 ms, et les fichiers sur le disque rigoureusement inchangés** (empreinte
+SHA-256 identique avant et après).
+
+C'est tout l'intérêt du chiffrement enveloppe : la rotation réécrit la clé de
+chaque fichier — quelques dizaines d'octets — et jamais les fichiers eux-mêmes.
+Sur un volume réel, c'est la différence entre quelques secondes et plusieurs
+heures d'indisponibilité.
+
+Trois propriétés rendent l'opération sûre :
+
+- **Idempotente** — une donnée déjà sur la clé cible est ignorée ; relancer ne
+  fait rien de plus.
+- **Reprenable** — chaque enregistrement est écrit indépendamment. Une
+  interruption laisse un mélange d'anciennes et de nouvelles versions, que la
+  prochaine exécution achève et que le service sait lire entre-temps.
+- **Sans interruption de service** — l'application peut continuer de tourner
+  pendant la bascule.
 
 ### AES-256-GCM, et pourquoi pas CBC
 
@@ -768,6 +808,81 @@ que ce seul jeton.
 
 ---
 
+## Exploitation
+
+### Journaux
+
+Une ligne par requête, en **JSON** hors développement — directement exploitable
+par une centralisation de logs, sans expression d'extraction à écrire :
+
+```json
+{"level":"log","context":"HTTP","message":{"requestId":"f32cd5c1-…","method":"GET","path":"/api/download/:token","status":404,"durationMs":95.42}}
+```
+
+**Ce qu'une ligne ne contient jamais** : ni corps de requête, ni en-têtes, ni
+jeton. Le corps contiendrait les mots de passe à l'inscription ; les en-têtes
+contiendraient les cookies de session et les mots de passe de liens.
+
+**Les jetons de partage sont masqués** avant écriture : `/api/download/k3Jv8Qw2…`
+devient `/api/download/:token`. Depuis que le destinataire n'a plus besoin de
+compte, ce jeton suffit à accéder au fichier — le journaliser reviendrait à
+recopier tous les liens du service dans un fichier souvent centralisé, conservé
+longtemps, et lisible par quiconque a accès à la supervision.
+
+> Le masquage est une **fonction partagée**, pas une précaution dupliquée. La
+> première version le faisait dans le journal de requêtes seulement, tandis que
+> le filtre d'exceptions écrivait l'URL brute de son côté : le secret fuyait
+> donc par l'endroit auquel on ne pensait pas. Vérifié depuis en conditions
+> réelles.
+
+Chaque réponse porte un `X-Request-Id`. Un utilisateur qui signale une erreur
+peut le communiquer, et on retrouve la requête exacte sans fouiller par
+horodatage.
+
+### Limitation des tentatives
+
+| Route | Limite | Ce qu'elle protège |
+|---|---|---|
+| `POST /api/auth/login` | 10 / 5 min | Le mot de passe d'un compte |
+| `POST /api/auth/register` | 10 / heure | La création de comptes en masse |
+| `GET /api/download/:token` | 20 / 5 min | Le mot de passe d'un lien |
+
+Elle vise les secrets **choisis par un humain**, donc devinables. Le jeton d'un
+lien, lui, fait 32 octets aléatoires : le deviner est hors de portée, et il n'a
+pas besoin de cette protection.
+
+Un dépassement répond `429 TOO_MANY_ATTEMPTS` avec un en-tête `Retry-After`.
+
+**Complémentaire du reverse proxy, pas redondante** : le proxy limite le volume
+brut par adresse et protège la disponibilité ; ce garde compte les tentatives
+sur une route précise et protège les mots de passe.
+
+> **Limite assumée** — le compteur est en mémoire. Avec plusieurs instances,
+> chacune compterait de son côté et la limite effective serait multipliée par
+> leur nombre. Cohérent avec le choix d'une instance unique ; à revoir si cela
+> change.
+>
+> **`TRUST_PROXY_HOPS` doit être réglé par SRC.** Derrière un reverse proxy sans
+> ce réglage, toutes les requêtes semblent venir de l'adresse du proxy — et la
+> limitation bloquerait tout le monde d'un coup dès qu'un seul visiteur s'agite.
+
+### Purge des jetons expirés
+
+```bash
+npm run tokens:purge
+```
+
+À planifier une fois par jour. **Sans risque** : ces lignes ne protègent plus
+rien une fois la date passée — un jeton expiré est de toute façon refusé par la
+vérification de signature. La manquer un jour n'ouvre aucun accès, cela laisse
+seulement quelques lignes de plus en base.
+
+```cron
+0 4 * * * cd /srv/filemoica && npm run tokens:purge
+```
+
+---
+
 ## Supervision et incident
 
 `GET /health` — volontairement **hors du préfixe `/api`** et sans
@@ -820,8 +935,11 @@ le tableau de tests.
 | Sonde | `GET /health` — 200 sain, 503 dégradé |
 | Secrets à fournir | `JWT_SECRET`, `ENCRYPTION_KEY_V1`, `HMAC_INDEX_KEY`, `DATABASE_URL` |
 | Sauvegarde | **Deux artefacts indissociables** : `pg_dump` (les clés chiffrées) **et** le contenu de `STORAGE_PATH` (les fichiers chiffrés). Restaurer l'un sans l'autre ne donne rien d'exploitable |
-| Purge | Les jetons expirés sont à purger périodiquement (script à venir) |
+| Purge | `npm run tokens:purge` à planifier une fois par jour |
+| **`TRUST_PROXY_HOPS`** | **À régler** selon le nombre de relais devant le service. Sans cela, la limitation de tentatives bloque tout le monde d'un coup |
+| Journaux | JSON, une ligne par requête, sur la sortie standard |
 | `ENABLE_API_DOCS` | Expose `/api/docs`. À `true` par défaut ; peut être coupé en production pour réduire ce qu'un attaquant apprend de la surface de l'API |
+| Rotation des clés | `npm run keys:rotate` quand une clé doit être changée |
 
 ### Pour le front (IW 1)
 
@@ -922,10 +1040,15 @@ Les tests les plus significatifs pour l'évaluation :
 | Deux fichiers de même nom n'ont pas le même chiffré | `crypto.service.spec.ts` |
 | Une fuite de la base ne livre aucun lien de partage | `crypto.service.spec.ts` |
 | Une rotation de clés ne casse pas les données existantes | `crypto.service.spec.ts` |
+| Une rotation ne touche pas aux fichiers sur le disque | `key-rotation.e2e-spec.ts` |
+| Le contenu reste déchiffrable après rotation | `key-rotation.e2e-spec.ts` |
 | Une erreur interne ne divulgue rien au client | `all-exceptions.filter.spec.ts` |
 | Un formulaire posté depuis un site tiers est bloqué | `csrf.guard.spec.ts` |
 | La sonde bascule en 503 quand la base tombe | `health.e2e-spec.ts` |
 | Un secret mal formé ne fuite pas dans les logs | `env.validation.spec.ts` |
+| Un jeton de partage n'apparaît jamais dans les journaux | `request-logger.middleware.spec.ts` · `all-exceptions.filter.spec.ts` |
+| Les tentatives répétées sont bloquées par adresse | `rate-limit.guard.spec.ts` |
+| Une variable à `false` est bien interprétée comme fausse | `env.validation.spec.ts` |
 | Un fichier déposé est illisible sur le disque | `files.e2e-spec.ts` |
 | …et reste pourtant récupérable avec sa clé | `files.e2e-spec.ts` |
 | Un utilisateur ne voit pas les fichiers d'un autre | `files.e2e-spec.ts` |
@@ -969,7 +1092,6 @@ besoin apparaissait.
 
 | Lot | Contenu |
 |---|---|
-| Rotation | Script de re-chiffrement des données existantes avec une nouvelle clé |
-| Journalisation | Logs structurés pour la centralisation |
-| Purge | Commande de nettoyage des jetons expirés, pour le cron de SRC |
-| Limitation de débit | Ralentir les tentatives répétées sur la connexion |
+| Sauvegarde et restauration | À jouer et chronométrer avec SRC — procédure déjà écrite dans [le document de décision](../docs/decision-stockage-fichiers.md) |
+| Conteneurisation | Dockerfile de l'application — **à répartir avec SRC** |
+| Rétention des fichiers | Aucun nettoyage automatique des fichiers dont tous les partages ont expiré. Politique à décider ensemble |

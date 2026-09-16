@@ -34,3 +34,8 @@ process.env.FRONTEND_ORIGIN ??= 'http://localhost:5173';
 // exactement la même chose qu'un mégaoctet.
 process.env.FREE_PLAN_QUOTA_MB ??= '1';
 process.env.PREMIUM_PLAN_QUOTA_MB ??= '5';
+
+// La suite crée des dizaines de comptes d'affilée depuis la même adresse : la
+// limitation de tentatives la bloquerait sans rien démontrer. Le comportement
+// du garde est vérifié par ses propres tests unitaires.
+process.env.RATE_LIMIT_ENABLED ??= 'false';
