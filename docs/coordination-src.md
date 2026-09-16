@@ -19,6 +19,11 @@ Ce document liste ce qui dépend de vous. **Répondez directement dans les cases
 | [`backend/docker-compose.deploy.yml`](../backend/docker-compose.deploy.yml) | Pile complète : base, migrations, application |
 | [`backend/.env.deploy.example`](../backend/.env.deploy.example) | Modèle de configuration à remplir |
 | [`backend/scripts/verifier-deploiement.mjs`](../backend/scripts/verifier-deploiement.mjs) | Vérifie un déploiement de l'extérieur |
+| **[configuration-deploiement.md](configuration-deploiement.md)** | **Toutes les variables d'environnement, leurs contraintes et ce qui casse si elles sont mal réglées** |
+
+> 📖 **À garder ouvert pendant le déploiement :**
+> [configuration-deploiement.md](configuration-deploiement.md). Ce document-ci
+> porte les décisions et les questions ; celui-là est la référence technique.
 
 ```bash
 cd backend

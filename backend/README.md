@@ -26,6 +26,8 @@ reste lisible d'un bout à l'autre :
 | [Administration](docs/administration.md) | Rôles, gestion des comptes et des offres, frontière avec le contenu |
 | [Exploitation](docs/exploitation.md) | Journaux, limitation des tentatives, purge, rotation des clés |
 | [Décision — stockage](../docs/decision-stockage-fichiers.md) | Options étudiées, choix retenu, procédure de sauvegarde et restauration |
+| [Configuration de déploiement](../docs/configuration-deploiement.md) | Référence de toutes les variables d'environnement — destinée à SRC |
+| [Coordination SRC](../docs/coordination-src.md) | Ce qui dépend de l'infrastructure, et les réponses attendues |
 
 ---
 
