@@ -18,6 +18,7 @@ qu'on ne confonde jamais l'intention et le code qui tourne.
 - [Choix techniques](#choix-techniques)
 - [Sécurité : ce qui est en place](#sécurité--ce-qui-est-en-place)
 - [Authentification](#authentification)
+- [Fichiers](#fichiers)
 - [Modèle de données](#modèle-de-données)
 - [Supervision et incident](#supervision-et-incident)
 - [Contrats avec le reste de l'équipe](#contrats-avec-le-reste-de-léquipe)
@@ -182,10 +183,10 @@ npx tsc --noEmit         # vérification de types
 | Chiffrement (enveloppe, index aveugle, jetons) | ✅ implémenté et testé |
 | Authentification (inscription, connexion, sessions, révocation) | ✅ implémenté et testé |
 | Documentation OpenAPI (`/api/docs`) | ✅ implémenté et testé |
-| Dépôt et téléchargement de fichiers | ⬜ schéma en base, endpoints à écrire |
-| Partages et révocation | ⬜ schéma en base, endpoints à écrire |
+| Dépôt, liste et suppression de fichiers | ✅ implémenté et testé |
+| Partages, révocation et téléchargement | ⬜ schéma en base, routes à écrire |
 
-**142 tests au vert** (100 unitaires, 42 end-to-end), analyse statique et
+**162 tests au vert** (100 unitaires, 62 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 ---
@@ -457,6 +458,57 @@ ouverte à tous, qu'on ne remarque jamais.
 
 ---
 
+## Fichiers
+
+| Méthode | Route | Rôle |
+|---|---|---|
+| `POST` | `/api/files` | Dépose un fichier (`multipart/form-data`, champ `file`) |
+| `GET` | `/api/files` | Liste ses propres fichiers |
+| `DELETE` | `/api/files/:id` | Supprime un fichier et son contenu |
+
+### Le chiffrement a lieu pendant la réception
+
+Les deux modes de réception fournis par la bibliothèque standard étaient
+inutilisables ici :
+
+- écrire d'abord sur le disque puis chiffrer laisserait le contenu **en clair**,
+  ne serait-ce qu'un instant — et définitivement si le service s'arrêtait
+  entre-temps ;
+- tout garder en mémoire ferait tomber le service au bout de quelques dépôts
+  simultanés.
+
+Un [moteur de réception sur mesure](src/files/encrypted-upload.storage.ts)
+branche donc le chiffrement directement sur le flux entrant. Les octets passent
+de la requête au fichier chiffré **sans jamais s'arrêter en clair**, ni sur le
+disque ni en mémoire.
+
+C'est ce qui permet d'affirmer, sans nuance : à aucun moment le serveur ne
+détient une version lisible d'un fichier déposé.
+
+### Cloisonnement entre utilisateurs
+
+Le filtre sur le propriétaire est appliqué **par la requête en base**, pas après
+coup : un fichier d'autrui ne remonte jamais, même le temps d'un traitement.
+
+La suppression d'un fichier appartenant à quelqu'un d'autre renvoie **404, pas
+403**. Un 403 confirmerait l'existence du fichier : en essayant des
+identifiants, on pourrait dénombrer les fichiers du service. Le 404 ne distingue
+pas « n'existe pas » de « n'est pas à vous ».
+
+### Limites appliquées
+
+| Limite | Valeur | Raison |
+|---|---|---|
+| Taille d'un fichier | `MAX_FILE_SIZE_MB`, 25 par défaut | Sans borne, un seul dépôt peut remplir le disque |
+| Fichiers par requête | 1 | Réduire ce qu'on accepte réduit ce qu'il faut valider |
+| Champs supplémentaires | 0 | Idem |
+
+Un dépôt interrompu ou trop volumineux voit son contenu partiel **retiré du
+support** : sans cela, chaque échec laisserait un fichier orphelin que personne
+ne nettoierait.
+
+---
+
 ## Modèle de données
 
 Cinq tables, identifiants UUID, migration `20260915145703_init`.
@@ -639,29 +691,34 @@ Les tests les plus significatifs pour l'évaluation :
 | Un formulaire posté depuis un site tiers est bloqué | `csrf.guard.spec.ts` |
 | La sonde bascule en 503 quand la base tombe | `health.e2e-spec.ts` |
 | Un secret mal formé ne fuite pas dans les logs | `env.validation.spec.ts` |
+| Un fichier déposé est illisible sur le disque | `files.e2e-spec.ts` |
+| …et reste pourtant récupérable avec sa clé | `files.e2e-spec.ts` |
+| Un utilisateur ne voit pas les fichiers d'un autre | `files.e2e-spec.ts` |
+| Le fichier d'autrui renvoie 404, pas 403 | `files.e2e-spec.ts` |
 
 ---
 
 ## Points ouverts
 
-### Stockage des fichiers et résilience — **à arbitrer avec SRC**
+### Limites assumées
 
-Le développement se fait contre une variable `STORAGE_PATH`, ce qui laisse le
-choix ouvert entre un volume Docker nommé et un stockage objet (S3/MinIO) sans
-rien réécrire *tant qu'il s'agit d'un chemin de système de fichiers*.
+Le stockage des fichiers a été arbitré avec SRC le 16/09 : **volume Docker
+nommé** monté sur `STORAGE_PATH`, sur une VM unique. Le raisonnement complet et
+les options écartées sont dans
+[docs/decision-stockage-fichiers.md](../docs/decision-stockage-fichiers.md).
 
-Un volume nommé est plus simple et réduit la surface d'attaque — comme le
-contenu est déjà chiffré par l'application, le support de stockage ne protège
-plus grand-chose, et un stockage objet ajouterait une paire de clés d'accès à
-protéger.
+Trois limites en découlent, assumées plutôt que passées sous silence :
 
-**Mais un volume nommé attache les fichiers à une machine.** Il ne permet ni
-plusieurs instances derrière un répartiteur de charge, ni le redémarrage du
-service sur un autre hôte. Si l'objectif de résilience inclut ces cas, il faut du
-stockage partagé, et l'arbitrage change.
+- **Les fichiers sont attachés à une machine.** Perdre la VM revient à perdre les
+  fichiers déposés depuis la dernière sauvegarde.
+- **Une seule instance.** Pas de répartition de charge ni de bascule
+  automatique : monter en charge signifie ici agrandir la machine.
+- **Le service est indisponible pendant un redémarrage**, quelques secondes.
 
-**Échéance :** la décision doit être prise avant l'écriture du dépôt de fichiers,
-car passer à du stockage objet remplace un chemin de fichier par un SDK.
+Ces limites viennent du cadre du projet — un service temporaire sur une VM — et
+non d'un oubli de conception. Le passage à un stockage partagé a été évalué et
+écarté ; l'interface `FileStorage` le garde réalisable en environ une heure si le
+besoin apparaissait.
 
 ### À implémenter
 
