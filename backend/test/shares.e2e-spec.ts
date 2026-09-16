@@ -1,6 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { readFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import request from 'supertest';
 import { App } from 'supertest/types';
@@ -505,6 +505,58 @@ describe('Partages (e2e)', () => {
         .expect(410);
 
       expect(second.body.error).toBe('FILE_ALREADY_DOWNLOADED');
+    });
+
+    // Le cas d'une restauration incomplète : la base et les liens sont intacts,
+    // mais les octets ont disparu du support. Vécu en jouant la démonstration de
+    // restauration — le service coupait alors la connexion sans rien expliquer.
+    it('répond une erreur explicite quand le contenu manque sur le disque', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { token } = await partager(alice, fichier);
+
+      const { storageName } = await prisma.file.findUniqueOrThrow({
+        where: { id: fichier },
+        select: { storageName: true },
+      });
+
+      // On efface le contenu sans toucher à la base : exactement l'état d'une
+      // sauvegarde où seul le dump aurait été restauré.
+      await rm(join(storageRoot, storageName));
+
+      const response = await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(500);
+
+      expect(response.body.error).toBe('CONTENT_UNAVAILABLE');
+    });
+
+    // Un lien à usage unique ne doit pas être consumé par un échec : le
+    // destinataire n'a rien reçu, il doit pouvoir réessayer une fois le volume
+    // remonté.
+    it('ne consume pas un lien à usage unique quand le contenu manque', async () => {
+      const alice = await connecter(ALICE);
+      const fichier = await deposer(alice);
+      const { id, token } = await partager(alice, fichier, {
+        burnAfterDownload: true,
+      });
+
+      const { storageName } = await prisma.file.findUniqueOrThrow({
+        where: { id: fichier },
+        select: { storageName: true },
+      });
+      await rm(join(storageRoot, storageName));
+
+      await request(app.getHttpServer())
+        .get(telechargement(token, fichier))
+        .expect(500);
+
+      const partageApres = await prisma.share.findUniqueOrThrow({
+        where: { id },
+        select: { consumedAt: true },
+      });
+
+      expect(partageApres.consumedAt).toBeNull();
     });
 
     // La promesse forte : la donnée ne survit pas à sa transmission.
