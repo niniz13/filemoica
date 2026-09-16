@@ -166,7 +166,7 @@ export class FilesService {
     await this.storage.remove(file.storageName);
 
     this.logger.log(
-      `Fichier ${fileId} effacé du serveur après un téléchargement à usage unique`,
+      `Fichier ${fileId} effacé du serveur : plus aucun lien exploitable`,
     );
 
     return true;

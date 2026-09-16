@@ -9,6 +9,7 @@ import { FilesController } from './files.controller';
 import { FilesService } from './files.service';
 import { QuotaGuard } from './quota.guard';
 import { QuotaService } from './quota.service';
+import { RetentionService } from './retention.service';
 
 @Module({
   imports: [
@@ -19,25 +20,25 @@ import { QuotaService } from './quota.service';
         crypto: CryptoService,
         storage: FileStorage,
       ) => ({
-        // Le chiffrement est branché sur la réception elle-même : aucun
-        // contenu en clair n'atteint le disque ni la mémoire.
+        // Le chiffrement est branch� sur la r�ception elle-m�me : aucun
+        // contenu en clair n'atteint le disque ni la m�moire.
         storage: new EncryptedUploadStorage(crypto, storage),
         limits: {
           fileSize:
             config.get('MAX_FILE_SIZE_MB', { infer: true }) * 1024 * 1024,
-          // Un seul fichier par requête, et aucun autre champ : réduire ce
-          // qu'on accepte réduit d'autant ce qu'il faut valider.
+          // Un seul fichier par requ�te, et aucun autre champ : r�duire ce
+          // qu'on accepte r�duit d'autant ce qu'il faut valider.
           files: 1,
           fields: 0,
         },
-        // Les noms de fichiers accentués arrivent autrement mutilés : le format
+        // Les noms de fichiers accentu�s arrivent autrement mutil�s : le format
         // d'envoi ne transporte pas d'indication d'encodage.
         defParamCharset: 'utf8',
       }),
     }),
   ],
   controllers: [FilesController],
-  providers: [FilesService, QuotaService, QuotaGuard],
-  exports: [FilesService, QuotaService],
+  providers: [FilesService, QuotaService, QuotaGuard, RetentionService],
+  exports: [FilesService, QuotaService, RetentionService],
 })
 export class FilesModule {}

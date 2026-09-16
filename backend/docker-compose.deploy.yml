@@ -1,0 +1,98 @@
+# Pile complète : base, migrations, application.
+#
+# Distinct de `docker-compose.yml`, qui ne monte qu'un PostgreSQL de
+# développement. Les deux ne se mélangent pas : celui-ci lance **aussi**
+# l'application, ce qui entrerait en conflit avec `npm run start:dev`.
+#
+# Sert à deux choses :
+#   1. vérifier que la conteneurisation fonctionne de bout en bout ;
+#   2. servir de point de départ à SRC pour le déploiement.
+#
+#   docker compose -f docker-compose.deploy.yml --env-file .env.deploy \
+#     -p filemoica up -d --build
+#
+# Les secrets ne sont pas dans ce fichier : ils viennent de `--env-file`.
+# La syntaxe `${VAR:?...}` fait échouer le démarrage avec un message clair
+# plutôt que de lancer le service avec une clé vide.
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-filemoica}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?mot de passe PostgreSQL manquant}
+      POSTGRES_DB: ${POSTGRES_DB:-filemoica}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # Aucun port publié : la base n'est joignable que par le réseau interne.
+    # C'est la différence la plus importante avec le fichier de développement —
+    # exposer PostgreSQL sur l'hôte en production reviendrait à l'offrir à
+    # quiconque atteint la machine.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-filemoica}']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Conteneur éphémère : applique les migrations puis s'arrête. L'application
+  # ne démarre qu'une fois qu'il a réussi (voir `depends_on` plus bas), ce qui
+  # évite qu'elle serve des requêtes sur un schéma incomplet.
+  migrate:
+    build:
+      context: .
+      target: migrations
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-filemoica}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-filemoica}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: 'no'
+
+  app:
+    build:
+      context: .
+      target: runtime
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-filemoica}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-filemoica}
+      JWT_SECRET: ${JWT_SECRET:?secret JWT manquant}
+      ENCRYPTION_KEY_V1: ${ENCRYPTION_KEY_V1:?clé de chiffrement manquante}
+      HMAC_INDEX_KEY: ${HMAC_INDEX_KEY:?clé d'index aveugle manquante}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?origine du front manquante}
+      # Nombre de relais devant le service. À passer à 1 derrière un reverse
+      # proxy, sinon toutes les requêtes semblent venir de son adresse et la
+      # limitation de tentatives bloque tout le monde d'un coup.
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
+    ports:
+      # Sur le port de boucle locale uniquement : c'est le reverse proxy qui
+      # expose le service au public, en HTTPS. L'application parle HTTP et ne
+      # doit jamais être atteignable directement.
+      - '127.0.0.1:${APP_PORT:-3000}:3000'
+    volumes:
+      - file-storage:/var/lib/filemoica/storage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+    # --- Durcissement ------------------------------------------------------
+    # Compatible tel quel avec l'image : le seul chemin dont l'application a
+    # besoin en écriture est son volume de stockage.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  db-data:
+  # Contient les fichiers chiffrés. **À sauvegarder avec le dump de la base** :
+  # restaurer l'un sans l'autre ne donne rien d'exploitable.
+  file-storage:

@@ -154,6 +154,27 @@ export class EnvironmentVariables {
   PREMIUM_PLAN_QUOTA_MB: number = 20_480;
 
   /**
+   * Durée de conservation d'un fichier dans l'offre gratuite, en jours.
+   *
+   * Comptée depuis la **fin du dernier partage** du fichier, ou depuis son
+   * dépôt s'il n'a jamais été partagé — jamais depuis le dépôt seul. Un fichier
+   * partagé pour 30 jours survit donc à son lien, et le délai ne commence à
+   * courir qu'ensuite.
+   *
+   * La conservation est un levier de l'offre autant qu'une mesure d'hygiène :
+   * sans elle, le disque se remplit indéfiniment, puisque le quota compte les
+   * dépôts et non le stockage.
+   */
+  @IsInt()
+  @Min(1)
+  FREE_PLAN_RETENTION_DAYS: number = 30;
+
+  /** Durée de conservation dans l'offre payante, en jours. */
+  @IsInt()
+  @Min(1)
+  PREMIUM_PLAN_RETENTION_DAYS: number = 90;
+
+  /**
    * Clé maître (KEK) version 1. Elle ne chiffre jamais un fichier directement :
    * elle chiffre la clé propre à chaque fichier (DEK), ce qui rend la rotation
    * possible sans retoucher aux fichiers eux-mêmes.
