@@ -260,15 +260,36 @@ Une conséquence de mes choix sur l'application :
 
 Garantie de résilience et détection instantanée : L'application dispose d'un plan de reprise d'activité (DRP) formellement éprouvé qui élimine tout risque de perte définitive de données. En cas de panne critique ou de corruption, l'équipe est alertée immédiatement sur Discord/Telegram et la remise en service complète s'effectue en quelques commandes sans altérer l'expérience utilisateur globale.
 
-### Killian DURANTI MACIA, SRC
+### Killian DURANTI MACIA — SRC
 
 **Ce que j'ai décidé, mesuré ou corrigé :**
-*À COMPLÉTER*
+
+* **Prise en charge de la machine de déploiement** — j'ai préparé et administré la VM Ubuntu utilisée pour héberger le projet : installation de Docker et Docker Compose, organisation des répertoires de déploiement dans `/opt`, gestion des services système et préparation de l'environnement nécessaire à l'exécution de la pile complète.
+
+* **Déploiement et intégration du projet des développeurs** — j'ai récupéré les versions successives du frontend Next.js et du backend NestJS, intégré leur code dans l'infrastructure, construit leurs images Docker multi-étapes et assuré les mises à jour par reconstruction des images sans supprimer les volumes persistants. J'ai également pris en compte les migrations Prisma lors des redéploiements.
+
+* **Architecture de reverse proxy à deux niveaux** — j'ai conservé Caddy directement sur la machine comme point d'entrée public et gestionnaire HTTPS, puis ajouté Nginx dans Docker comme reverse proxy interne. Caddy reçoit les connexions sur le domaine `filemoica.duckdns.org` et transmet uniquement vers Nginx sur `127.0.0.1:8080`. Nginx distribue ensuite les requêtes vers le frontend sur le port `3001` ou le backend sur le port `3000`.
+
+* **Isolation réseau des services** — PostgreSQL, le backend, le frontend et Vault ne sont pas publiés directement sur Internet. PostgreSQL utilise un réseau Docker interne dédié et Vault un réseau privé séparé. Le port de Nginx est lié uniquement à `127.0.0.1`, de sorte que le seul véritable point d'entrée public reste Caddy.
+
+* **Gestion du pare-feu et de l'exposition réseau** — j'ai configuré la machine afin de limiter l'accès extérieur aux services nécessaires au fonctionnement du site, principalement HTTP/HTTPS, tout en laissant PostgreSQL, Vault et les ports applicatifs accessibles uniquement depuis la machine ou les réseaux Docker concernés. Cette organisation évite d'exposer directement les composants internes de l'application.
+
+* **Intégration de HashiCorp Vault** — j'ai ajouté Vault à la pile Docker afin de centraliser les secrets applicatifs tels que `JWT_SECRET`, `ENCRYPTION_KEY_V1` et `HMAC_INDEX_KEY`. Une première intégration avec stockage Raft, initialisation et mécanisme d'unseal a été mise en place et testée. Pour l'environnement de démonstration, j'ai ensuite simplifié le fonctionnement avec un Vault en mode développement et un service d'initialisation automatique, afin que le déploiement reste reproductible sans intervention manuelle à chaque redémarrage.
+
+* **Diagnostic et correction des problèmes de déploiement** — plusieurs défauts n'apparaissaient qu'une fois la pile réellement exécutée : changement du chemin de volume de PostgreSQL 18, double chargement de la configuration Vault provoquant un conflit sur le port `8200`, erreur de configuration Nginx, résolution DNS des services uniquement disponible depuis le réseau Docker, et configuration Caddy invalide provoquant une erreur HTTP 502. Ces problèmes ont été reproduits avec les logs Docker, `curl`, les healthchecks et les outils de validation de configuration avant correction.
+
+* **Persistance et redéploiement** — PostgreSQL et le stockage des fichiers utilisent des volumes Docker persistants. La pile peut ainsi être reconstruite avec `docker compose up -d --build` sans supprimer les données. Les volumes ne sont détruits que volontairement lors d'une remise à zéro de l'environnement.
+
+* **Validation du fonctionnement réel** — après intégration, j'ai vérifié séparément chaque niveau de la chaîne : PostgreSQL en état `healthy`, Vault en état `healthy`, backend et frontend en état `healthy`, accès au frontend via Nginx sur `127.0.0.1:8080`, endpoint `/health` du backend, puis accès final en HTTPS par `filemoica.duckdns.org`.
 
 **Une conséquence de mes choix sur l'application :**
-*À COMPLÉTER*
 
----
+Le choix de placer l'application derrière **deux reverse proxies, Caddy puis Nginx**, a directement influencé la configuration du backend. Le backend doit connaître le nombre de relais avec `TRUST_PROXY_HOPS=2` et recevoir correctement les en-têtes `X-Forwarded-For` et `X-Forwarded-Proto`. Sans cette configuration, l'application risque de considérer toutes les requêtes comme provenant du reverse proxy, ce qui fausserait notamment l'adresse IP utilisée par les mécanismes de limitation de tentatives et les journaux.
+
+Le déploiement du frontend impose également une contrainte à SRC : `NEXT_PUBLIC_API_URL` est intégrée dans le bundle Next.js au moment du build. Un changement de domaine ou d'URL d'API ne peut donc pas être corrigé uniquement dans l'environnement d'exécution ; il faut reconstruire l'image frontend.
+
+Enfin, l'intégration de Vault m'a obligé à coordonner la gestion des secrets avec les variables attendues par le backend. L'infrastructure doit fournir exactement les variables définies par l'application ; un changement de nom ou l'ajout d'un nouveau secret côté IW doit donc être répercuté dans la configuration de déploiement.
+
 
 ## 5. Ce qui a changé après les retours
 
