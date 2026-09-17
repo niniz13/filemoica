@@ -70,22 +70,28 @@ Front sur **3001**, backend sur **3000**.
 
 **Mot de passe commun : `demonstration-filemoica-2026`**
 
-> ⚠️ **La connexion se fait en deux temps.** Après le mot de passe, un **code à
-> six chiffres** arrive par courriel. Les comptes de démonstration utilisent des
-> adresses `@filemoica.fr` qui n'existent pas : **vous ne recevrez jamais leur
-> code.**
+> ✅ **Ces trois comptes se connectent en une seule étape.** La double
+> authentification est un **réglage par compte**, désactivé sur eux : leurs
+> adresses `@filemoica.fr` n'existent pas, ils ne recevraient jamais leur code.
+> Leur adresse est en revanche marquée comme confirmée par le *seed*, sinon la
+> connexion serait refusée.
 >
-> **Sans clé Brevo dans `backend/.env`, le code s'affiche dans le terminal du
-> backend** — c'est le mode de secours prévu pour cela :
+> **Pour montrer le second facteur**, deux options :
 >
-> ```
-> WARN [MailService] BREVO_API_KEY absente — le courriel n'est PAS envoyé
-> WARN [MailService]   Message : Votre code de connexion : 482913 | ...
-> ```
+> 1. **Sur un compte de démonstration** — l'activer depuis « Compte », puis se
+>    reconnecter. Sans clé Brevo dans `backend/.env`, le code s'affiche dans le
+>    terminal du backend, c'est le mode de secours prévu pour cela :
 >
-> **C'est le réglage que je recommande pour l'oral** : aucune dépendance au
-> réseau, et le code est sous les yeux. Pour montrer un vrai envoi, inscrivez un
-> compte avec **votre propre adresse** — là, la clé Brevo est nécessaire.
+>    ```
+>    WARN [MailService] BREVO_API_KEY absente — le courriel n'est PAS envoyé
+>    WARN [MailService]   Message : Votre code de connexion : 482913 | ...
+>    ```
+>
+> 2. **Sur un compte inscrit avec votre propre adresse** — le courriel arrive
+>    réellement, mais la clé Brevo et le réseau deviennent nécessaires.
+>
+> **Pour l'oral, la seconde option est la plus convaincante**, la première la
+> plus sûre. Préparez les deux, jouez celle que le réseau permet.
 
 | Compte | Rôle | Offre | Ce qu'il sert à montrer |
 |---|---|---|---|
@@ -110,11 +116,20 @@ produit puis la sécurité.
 | 1 | S'inscrire avec **votre propre adresse** | Écran « Compte créé — vérifiez votre boîte » |
 | 2 | Tenter de se connecter **sans confirmer** | ❌ Refusé : une adresse non confirmée n'ouvre aucun compte |
 | 3 | Ouvrir le lien reçu par courriel | ✅ « Adresse confirmée » |
-| 4 | Se connecter : mot de passe accepté | Écran **« Code de connexion »** — *aucune session n'est encore ouverte* |
-| 5 | Saisir le code à six chiffres | ✅ Vous entrez |
+| 4 | Se connecter | Vous entrez : le second facteur n'est pas encore armé |
+| 5 | Aller sur **« Compte » → Double authentification**, saisir le mot de passe, **Activer** | Le réglage exige le mot de passe, pas seulement la session |
+| 6 | Se déconnecter, puis se reconnecter | Écran **« Code de connexion »** — *aucune session n'est encore ouverte* |
+| 7 | Saisir le code à six chiffres reçu par courriel | ✅ Vous entrez |
 
-> **La phrase à dire au point 4 :** le mot de passe seul ne donne plus accès au
+> **La phrase à dire au point 6 :** le mot de passe seul ne donne plus accès au
 > compte. Même volé, il ne suffit pas — il faut aussi la boîte aux lettres.
+
+**Si on vous demande pourquoi ce n'est pas imposé à tous** : l'imposer ferait
+dépendre **chaque** connexion d'un envoi de courriel qui aboutit. Un service de
+transfert de fichiers dont personne ne peut entrer parce que le fournisseur de
+messagerie a hoqueté, c'est une panne totale. Le réglage est donc par compte, et
+sa bascule est elle-même protégée par le mot de passe : une session volée ne
+permet pas de désarmer la protection.
 
 **Si on vous demande pourquoi six chiffres suffisent** : ce n'est pas la
 longueur du code qui protège, c'est **cinq essais par défi et dix minutes de
@@ -257,9 +272,9 @@ la branche `consolidation-compose`.)*
 - [ ] `backend/.env` rempli, avec `FRONTEND_ORIGIN=http://localhost:3001`
 - [ ] **Décidé pour les courriels** : clé Brevo renseignée (envoi réel) *ou* laissée vide (code dans le terminal)
 - [ ] `npm run db:up` → base démarrée
-- [ ] `npm run build` puis `npm run seed` → 3 comptes créés **et confirmés**
+- [ ] `npm run build` puis `npm run seed` → 3 comptes créés, **confirmés, sans second facteur**
 - [ ] Backend sur 3000, frontend sur 3001, `/health` répond `200`
-- [ ] **Le terminal du backend est visible** — c'est là que s'affiche le code de connexion
-- [ ] Une connexion de démonstration **déjà répétée une fois** : le code à six chiffres surprend la première fois
+- [ ] **Le terminal du backend est visible** — c'est là que s'affiche le code de connexion à défaut de clé Brevo
+- [ ] L'**activation du second facteur depuis « Compte » déjà répétée une fois** : c'est l'étape de l'acte 0 où l'on peut hésiter
 - [ ] Un onglet de **navigation privée** déjà ouvert, pour l'acte 1
 - [ ] Un fichier de test sous la main (un PDF ou une image, pas un fichier vide)

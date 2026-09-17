@@ -81,13 +81,18 @@ authentification par courriel à chaque connexion.*
 | 3.20 | Jeton de confirmation en base | Empreinte seule | ✅ SHA-256, jeton absent | Automatisé | `auth.e2e-spec.ts` |
 | 3.21 | Redemander un lien invalide-t-il le précédent ? | Oui | ✅ L'ancien est consommé | Automatisé | `auth.e2e-spec.ts` |
 | 3.22 | `resend-verification` sur une adresse inconnue | **Même réponse** qu'un compte réel | ✅ `204` dans les deux cas | Automatisé | Sinon la route dit qui est inscrit |
-| 3.23 | Première étape de connexion | **Aucun cookie posé** | ✅ `{mfaRequired:true}`, `Set-Cookie` absent | Automatisé | `auth.e2e-spec.ts` |
+| 3.23 | Première étape de connexion, second facteur armé | **Aucun cookie posé** | ✅ `{mfaRequired:true}`, `Set-Cookie` absent | Automatisé | `auth.e2e-spec.ts` |
 | 3.24 | Code de connexion en base | Empreinte argon2id | ✅ `$argon2id$…`, aucun chiffre lisible | Automatisé | Six chiffres en SHA-256 se cassent en millisecondes |
 | 3.25 | Code faux | Refus | ✅ `401 MFA_CODE_INVALID` | Automatisé | `auth.e2e-spec.ts` |
 | 3.26 | **Cinq essais infructueux**, puis le bon code | Refusé quand même | ✅ Le défi est clos | Automatisé | C'est cela qui rend six chiffres suffisants |
 | 3.27 | Rejouer un défi déjà utilisé | Refus | ✅ `401` | Automatisé | `auth.e2e-spec.ts` |
 | 3.28 | Défi expiré | Refus | ✅ `401` | Automatisé | `auth.e2e-spec.ts` |
 | 3.29 | Relancer une connexion | Le défi précédent est invalidé | ✅ L'ancien code ne passe plus | Automatisé | Sinon deux codes valides coexistent |
+| 3.30 | Compte neuf | Second facteur **inactif**, connexion en une étape | ✅ `{mfaRequired:false}` et cookies posés | Automatisé | Le réglage est par compte |
+| 3.31 | Bascule du réglage avec un **mot de passe faux** | Refus, réglage inchangé | ✅ `401 INVALID_CREDENTIALS`, `mfaEnabled` toujours `false` | Automatisé | Une session volée ne doit pas désarmer la protection |
+| 3.32 | Bascule sans session | Refus | ✅ `401` | Automatisé | `auth.e2e-spec.ts` |
+| 3.33 | Activation puis reconnexion | Un code est exigé | ✅ `{mfaRequired:true}` | Automatisé | Le réglage prend effet immédiatement |
+| 3.34 | Désactivation puis reconnexion | Connexion directe | ✅ `{mfaRequired:false}` | Automatisé | La bascule fonctionne dans les deux sens |
 
 **Ce qui rend un code à six chiffres défendable** : ce n'est pas sa longueur —
 un million de combinaisons se parcourt vite. C'est la conjonction de **cinq
@@ -264,13 +269,13 @@ le volume remonté, le destinataire peut réessayer.
 
 | Commande | Résultat | Date |
 |---|---|---|
-| `npm test` | **140 / 140** | 16/09 |
-| `npm run test:e2e` | **184 / 184** (8 suites) | 16/09 |
-| `npm run lint` | 0 avertissement | 16/09 |
-| `npx tsc --noEmit` | 0 erreur | 16/09 |
-| `npm run build` | Succès | 16/09 |
+| `npm test` | **143 / 143** | 17/09 |
+| `npm run test:e2e` | **189 / 189** (8 suites) | 17/09 |
+| `npm run lint` | 0 avertissement | 17/09 |
+| `npx tsc --noEmit` | 0 erreur | 17/09 |
+| `npm run build` | Succès | 17/09 |
 
-**324 tests**, dont 184 de bout en bout contre une vraie base PostgreSQL et un
+**332 tests**, dont 189 de bout en bout contre une vraie base PostgreSQL et un
 vrai répertoire de stockage — pas des doubles.
 
 ---

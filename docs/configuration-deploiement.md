@@ -100,13 +100,16 @@ non. Rangez-la ailleurs, mais rangez-la.
 
 ## 2. Envoi de courriels — Brevo
 
-Le service envoie deux types de messages, et **les deux bloquent la connexion
-s'ils n'arrivent pas** :
+Le service envoie deux types de messages :
 
 | Message | Quand | Sans lui |
 |---|---|---|
-| Lien de confirmation | À l'inscription | Le compte ne peut pas être activé |
-| Code à six chiffres | À chaque connexion | Personne ne peut se connecter |
+| Lien de confirmation | À l'inscription, **toujours** | Aucun compte ne peut être activé — le service est inutilisable |
+| Code à six chiffres | À la connexion, **sur les comptes ayant armé la double authentification** | Ces comptes-là ne peuvent plus se connecter |
+
+La double authentification est un **réglage par compte**, désactivé par défaut,
+que chacun active depuis sa page « Compte ». Le lien de confirmation, lui, n'est
+pas optionnel : **la clé Brevo reste indispensable en production.**
 
 | Variable | Obligatoire | Défaut | Rôle |
 |---|---|---|---|

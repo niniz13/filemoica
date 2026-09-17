@@ -36,6 +36,13 @@ export class CurrentUserResponse {
 
   @ApiProperty({ enum: ['USER', 'ADMIN'], example: 'USER' })
   role: string;
+
+  @ApiProperty({
+    example: false,
+    description:
+      'La double authentification est-elle active ? Se règle sur `PATCH /api/auth/mfa`.',
+  })
+  mfaEnabled: boolean;
 }
 
 /** Réponse de `POST /api/auth/refresh`. Les jetons partent dans les cookies. */

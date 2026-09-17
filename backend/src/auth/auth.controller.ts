@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   Req,
   Res,
@@ -20,13 +21,19 @@ import {
 import type { Request, Response } from 'express';
 import { ApiErrorResponse } from '../common/dto/api-error.response';
 import { RateLimit } from '../common/guards/rate-limit.guard';
-import { AuthService } from './auth.service';
+import { AuthService, estUnDefi } from './auth.service';
 import { EmailVerificationService } from './email-verification.service';
 import { MfaService } from './mfa.service';
 import { CookieService, REFRESH_COOKIE } from './cookie.service';
 import { CurrentUser, Public } from './decorators';
 import { CredentialsDto } from './dto/credentials.dto';
-import { MfaChallengeResponse, VerifyMfaDto } from './dto/mfa.dto';
+import {
+  MfaChallengeResponse,
+  MfaSettingResponse,
+  SetMfaDto,
+  VerifyMfaDto,
+  type LoginResponse,
+} from './dto/mfa.dto';
 import {
   ResendVerificationDto,
   VerifyEmailDto,
@@ -144,12 +151,13 @@ export class AuthController {
   @RateLimit({ limit: 10, windowSeconds: 300 })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Se connecter (première étape)',
+    summary: 'Se connecter',
     description:
-      'Vérifie les identifiants et envoie un code à six chiffres par courriel. **Aucune session n\'est ouverte à ce stade** : il faut valider le code sur `/api/auth/mfa/verify`.',
+      'Deux issues selon le compte. **Sans second facteur**, les cookies de session sont posés et la réponse porte `mfaRequired: false`. **Avec second facteur**, un code à six chiffres part par courriel, aucun cookie n\'est posé, et il faut enchaîner sur `/api/auth/mfa/verify`.',
   })
   @ApiOkResponse({
-    description: 'Identifiants acceptés, code envoyé.',
+    description:
+      'Identifiants acceptés. Le champ `mfaRequired` dit laquelle des deux issues s\'applique.',
     type: MfaChallengeResponse,
   })
   @ApiResponse({
@@ -159,19 +167,65 @@ export class AuthController {
     type: ApiErrorResponse,
   })
   @Post('login')
-  async login(@Body() credentials: CredentialsDto): Promise<MfaChallengeResponse> {
-    const defi = await this.auth.login(credentials.email, credentials.password);
+  async login(
+    @Body() credentials: CredentialsDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<LoginResponse> {
+    const resultat = await this.auth.login(
+      credentials.email,
+      credentials.password,
+    );
 
-    if (!defi) {
+    if (!resultat) {
       throw new UnauthorizedException({
         error: 'INVALID_CREDENTIALS',
         message: 'Email ou mot de passe incorrect.',
       });
     }
 
-    // Aucun cookie n'est posé ici : les identifiants seuls n'ouvrent plus de
-    // session. C'est la raison d'être du second facteur.
-    return { mfaRequired: true, challengeId: defi.challengeId };
+    // Deux issues selon le compte. Avec le second facteur, aucun cookie n'est
+    // posé ici : la session naît sur `/mfa/verify`.
+    if (estUnDefi(resultat)) {
+      return { mfaRequired: true, challengeId: resultat.challengeId };
+    }
+
+    this.cookies.setSessionCookies(response, resultat);
+
+    return { mfaRequired: false, user: resultat.user };
+  }
+
+  /**
+   * Active ou coupe la double authentification sur son propre compte.
+   *
+   * Le mot de passe est redemandé : couper un facteur d'authentification ne
+   * doit pas être possible avec une simple session, qui peut avoir été volée.
+   */
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Activer ou couper la double authentification' })
+  @ApiOkResponse({ description: 'Réglage enregistré.', type: MfaSettingResponse })
+  @ApiResponse({
+    status: 401,
+    description:
+      '`INVALID_CREDENTIALS` — mot de passe incorrect, ou `NOT_AUTHENTICATED`.',
+    type: ApiErrorResponse,
+  })
+  @RateLimit({ limit: 10, windowSeconds: 300 })
+  @HttpCode(HttpStatus.OK)
+  @Patch('mfa')
+  async setMfa(
+    @CurrentUser() user: AccessTokenPayload,
+    @Body() body: SetMfaDto,
+  ): Promise<MfaSettingResponse> {
+    const ok = await this.auth.changerMfa(user.sub, body.enabled, body.password);
+
+    if (!ok) {
+      throw new UnauthorizedException({
+        error: 'INVALID_CREDENTIALS',
+        message: 'Mot de passe incorrect.',
+      });
+    }
+
+    return { mfaEnabled: body.enabled };
   }
 
   /**

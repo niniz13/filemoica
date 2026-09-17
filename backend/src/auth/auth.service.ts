@@ -10,12 +10,31 @@ import { MfaService, type DefiEmis } from './mfa.service';
 import { PasswordService } from './password.service';
 import { IssuedTokens, TokenService } from './token.service';
 
+/** Une session ouverte : jetons et compte. */
+export type SessionOuverte = IssuedTokens & { user: PublicUser };
+
+/** Distingue les deux issues possibles d'une connexion. */
+export function estUnDefi(
+  resultat: SessionOuverte | DefiEmis,
+): resultat is DefiEmis {
+  return 'challengeId' in resultat;
+}
+
 /** Représentation publique d'un compte — jamais l'empreinte du mot de passe. */
 export interface PublicUser {
   id: string;
   email: string;
   role: string;
 }
+
+/**
+ * Le compte tel que son propriétaire le voit sur sa page de profil.
+ *
+ * Ajoute l'état du second facteur à {@link PublicUser} : c'est un réglage
+ * personnel, qui n'a rien à faire dans les réponses décrivant *un autre*
+ * compte (un destinataire, un partage).
+ */
+export type CompteCourant = PublicUser & { mfaEnabled: boolean };
 
 /**
  * Inscription, connexion et fermeture de session.
@@ -94,7 +113,7 @@ export class AuthService {
   async login(
     email: string,
     password: string,
-  ): Promise<DefiEmis | null> {
+  ): Promise<SessionOuverte | DefiEmis | null> {
     const user = await this.prisma.user.findUnique({
       where: { email: this.normalizeEmail(email) },
       select: {
@@ -103,6 +122,7 @@ export class AuthService {
         role: true,
         passwordHash: true,
         emailVerifiedAt: true,
+        mfaEnabled: true,
       },
     });
 
@@ -137,10 +157,49 @@ export class AuthService {
       });
     }
 
-    // Les identifiants sont bons, mais ils ne suffisent plus : la session
-    // n'est ouverte qu'après le second facteur. C'est tout l'intérêt — un mot
-    // de passe volé ne donne plus accès au compte à lui seul.
-    return this.mfa.emettre(user.id, user.email);
+    // Avec le second facteur, les identifiants ne suffisent plus : la session
+    // n'est ouverte qu'après le code. Sans lui, la connexion se termine ici.
+    if (user.mfaEnabled) {
+      return this.mfa.emettre(user.id, user.email);
+    }
+
+    const tokens = await this.tokens.openSession(user);
+
+    return {
+      ...tokens,
+      user: { id: user.id, email: user.email, role: user.role },
+    };
+  }
+
+  /**
+   * Active ou coupe la double authentification sur son propre compte.
+   *
+   * Le mot de passe est redemandé : **couper un facteur d'authentification est
+   * une action sensible**. Sans cette confirmation, une session volée suffirait
+   * à désarmer la protection qui la rendait difficile à voler.
+   *
+   * @returns `false` si le mot de passe est faux.
+   */
+  async changerMfa(userId: string, enabled: boolean, motDePasse: string): Promise<boolean> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { passwordHash: true },
+    });
+
+    if (!user || !(await this.passwords.verify(user.passwordHash, motDePasse))) {
+      return false;
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { mfaEnabled: enabled },
+    });
+
+    this.logger.log(
+      `Double authentification ${enabled ? 'activée' : 'désactivée'} — compte ${userId}`,
+    );
+
+    return true;
   }
 
   /**
@@ -179,12 +238,13 @@ export class AuthService {
    * Le rôle n'est jamais porté par le jeton de session : il est relu en base à
    * chaque fois qu'il compte, ici comme dans l'administration, pour qu'un
    * changement de rôle prenne effet immédiatement plutôt qu'à la prochaine
-   * connexion.
+   * connexion. `mfaEnabled` suit le même chemin : la page de profil affiche
+   * l'état réel du compte, pas celui qu'il avait à l'ouverture de la session.
    */
-  async findById(id: string): Promise<PublicUser | null> {
+  async findById(id: string): Promise<CompteCourant | null> {
     return this.prisma.user.findUnique({
       where: { id },
-      select: { id: true, email: true, role: true },
+      select: { id: true, email: true, role: true, mfaEnabled: true },
     });
   }
 

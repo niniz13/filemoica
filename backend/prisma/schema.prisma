@@ -64,6 +64,13 @@ model User {
   /// Empreinte argon2id. Le mot de passe lui-même n'existe nulle part.
   passwordHash String @map("password_hash")
 
+  /// La double authentification est-elle active sur ce compte ?
+  ///
+  /// Désactivée par défaut : l'imposer à tous ferait dépendre chaque connexion
+  /// d'un envoi de courriel, y compris pour les comptes de démonstration dont
+  /// l'adresse n'existe pas.
+  mfaEnabled Boolean @default(false) @map("mfa_enabled")
+
   /// Date de confirmation de l'adresse. Nulle tant qu'elle ne l'est pas :
   /// la connexion est alors refusée.
   emailVerifiedAt DateTime? @map("email_verified_at")

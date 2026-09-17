@@ -60,7 +60,7 @@ describe('Administration (e2e)', () => {
       // La connexion est refusée tant que l'adresse n'est pas confirmée.
       await confirmerAdresse(prisma, email);
 
-    const cookiesSession = await ouvrirSession(app, prisma, email, PASSWORD);
+    const cookiesSession = await ouvrirSession(app, email, PASSWORD);
 
     return {
       cookies: cookiesSession,
