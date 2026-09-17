@@ -162,7 +162,7 @@ fonctionne.
 |---|---|---|
 | Martin Simon | 37 | Backend intégral, chiffrement, tests, conteneurisation, documentation |
 | Jérémy Gross | 12 | Frontend, interface d'administration, partage multi-fichiers |
-| SRC | — | *À COMPLÉTER — leurs traces : dépôt, tickets, configuration* |
+
 
 ### Martin Simon — IW, backend
 
