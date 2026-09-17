@@ -1,0 +1,284 @@
+# =============================================================================
+# Intégration et livraison continues — filemoica
+#
+# Deux temps, dans cet ordre, et le second ne démarre que si le premier a réussi
+# (`needs:`) :
+#
+#   1. Vérifier  — lint, types, 143 tests unitaires, 189 tests de bout en bout
+#                  contre un vrai PostgreSQL, puis compilation.
+#   2. Livrer    — construire les images Docker et les publier sur GHCR, d'où
+#                  l'équipe SRC les tire.
+#
+# Ce pipeline s'arrête à la **livraison** : il publie des images, il ne déploie
+# rien. Le déploiement est un acte volontaire de SRC sur leur infrastructure —
+# c'est délibéré, une mise en production ne doit pas être l'effet de bord d'un
+# `git push`.
+# =============================================================================
+
+name: CI/CD
+
+on:
+  # Un `merge` d'une pull request dans `main` est un `push` sur `main` : ce seul
+  # déclencheur couvre les deux cas.
+  push:
+    branches: [main]
+    # Les tags de version produisent en plus une image versionnée, celle qu'on
+    # déploie et qu'on peut citer : `latest` bouge, `1.0.0` non.
+    tags: ['v*']
+
+  # Vérification **avant** la fusion. Sans elle, une branche cassée n'est
+  # détectée qu'une fois sur `main` — c'est-à-dire au pire moment. Ici seule
+  # l'étape de vérification s'exécute : les jobs de publication sont écartés
+  # (`if:`), une branche en cours de revue n'a rien à publier.
+  pull_request:
+    branches: [main]
+
+  # Permet de relancer la chaîne à la main depuis l'onglet Actions, sans avoir à
+  # inventer un commit — utile le jour d'une démonstration.
+  #
+  # ⚠️ GitHub ne propose ce bouton que pour les workflows présents sur la
+  # branche par défaut : il ne sera visible qu'une fois ce fichier dans `main`.
+  workflow_dispatch:
+
+permissions:
+  # Le strict nécessaire : lire le dépôt, écrire dans le registre de paquets.
+  # Aucun jeton personnel à créer, `GITHUB_TOKEN` suffit pour GHCR.
+  contents: read
+  packages: write
+
+concurrency:
+  # Deux pushes rapprochés ne doivent pas publier le même tag en même temps :
+  # le plus ancien est annulé.
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Vérification du backend
+  # ---------------------------------------------------------------------------
+  tests-backend:
+    name: Tests backend
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      # Un vrai PostgreSQL, pas un double : c'est tout l'intérêt de la suite de
+      # bout en bout. Les contraintes d'unicité, les clés étrangères et les
+      # suppressions en cascade ne se vérifient que contre un vrai moteur.
+      db:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: filemoica
+          # Identifiants jetables, et lisibles à dessein : cette base naît et
+          # meurt avec le job, sur un runner isolé, sans port exposé au-delà.
+          # Les identifiants de production viennent de SRC et ne sont ni ici ni
+          # dans le dépôt.
+          POSTGRES_PASSWORD: filemoica
+          # Directement la base de test : le runner n'a pas de base de
+          # développement à préserver, le script `init-test-db.sh` est inutile ici.
+          POSTGRES_DB: filemoica_test
+        ports:
+          # 5432 et non 5433 : le décalage local n'existe que parce qu'un
+          # PostgreSQL natif occupe déjà le port standard sur le poste de
+          # développement. Un runner est vierge.
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U filemoica"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # Prioritaire sur les valeurs par défaut de `test/setup-env.ts`, qui sont
+      # posées en `??=` précisément pour ça. Les autres variables de test
+      # (clés, quotas) restent celles du fichier : factices et publiques.
+      DATABASE_URL: postgresql://filemoica:filemoica@localhost:5432/filemoica_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # La version vient de `.nvmrc` : une seule source de vérité entre le
+          # poste, l'image Docker et le pipeline.
+          node-version-file: backend/.nvmrc
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      # `npm ci` et non `npm install` : il installe exactement le verrou et
+      # échoue si `package.json` et `package-lock.json` divergent.
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Analyse statique
+        run: npm run lint
+
+      # Le `tsconfig.spec.json` couvre `src/` **et** `test/` : une erreur de type
+      # dans un test est une erreur, pas un détail.
+      - name: Vérification des types
+        run: npx tsc --noEmit -p tsconfig.spec.json
+
+      - name: Migrations sur la base de test
+        run: npx prisma migrate deploy
+
+      - name: Tests unitaires
+        run: npm test
+
+      - name: Tests de bout en bout
+        run: npm run test:e2e
+
+      # En dernier : inutile de compiler si les tests ne passent pas, et cela
+      # confirme que le code livré est bien celui qui vient d'être éprouvé.
+      - name: Compilation
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # 2. Images backend et migrations
+  # ---------------------------------------------------------------------------
+  image-backend:
+    name: Images backend
+    needs: tests-backend
+    # Sur une pull request, on vérifie, on ne livre pas : publier depuis une
+    # branche en cours de revue mettrait du code non fusionné sur le registre,
+    # sous des tags que SRC pourrait tirer.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version applicative exposée par `/health`. Sur un tag, c'est le nom du
+      # tag ; sinon l'empreinte courte du commit. Dans les deux cas on peut
+      # remonter d'un conteneur qui tourne à la ligne de code exacte.
+      - name: Déterminer la version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "value=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Authentification au registre
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          # Fourni automatiquement par GitHub : aucun secret à créer ni à
+          # transmettre. Sa portée est limitée à ce dépôt et il expire avec le job.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Image applicative ---
+      - name: Étiquettes de l'image backend
+        id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/filemoica-backend
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Construire et publier le backend
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          target: runtime
+          push: true
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.value }}
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          # Le cache de construction est conservé entre deux exécutions : sans
+          # lui, `npm ci` serait rejoué intégralement à chaque commit.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --- Image de migrations ---
+      # Publiée séparément, et c'est le point souvent oublié : sans elle, SRC
+      # n'a aucun moyen d'appliquer `prisma migrate deploy` sans reconstruire
+      # l'image à la main. Les migrations sont un acte d'administration, pas un
+      # effet de bord du démarrage de l'application.
+      - name: Étiquettes de l'image de migrations
+        id: meta-migrations
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/filemoica-migrations
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Construire et publier les migrations
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          target: migrations
+          push: true
+          tags: ${{ steps.meta-migrations.outputs.tags }}
+          labels: ${{ steps.meta-migrations.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # 3. Image frontend
+  # ---------------------------------------------------------------------------
+  image-frontend:
+    name: Image frontend
+    # Enchaînée sur les tests backend comme le reste : une pile dont le backend
+    # est cassé n'a pas à produire d'images, fût-ce celle du frontend.
+    needs: tests-backend
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Authentification au registre
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Étiquettes de l'image frontend
+        id: meta-frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/filemoica-frontend
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      # ⚠️ `NEXT_PUBLIC_API_URL` est inlinée dans le bundle JavaScript **au
+      # moment de la construction**, pas au démarrage du conteneur. Une image
+      # construite avec la mauvaise valeur pointe définitivement au mauvais
+      # endroit : il faut la reconstruire, pas la reconfigurer. La valeur se
+      # règle dans Settings → Secrets and variables → Actions → Variables, sous
+      # le nom `NEXT_PUBLIC_API_URL`. Sans elle, l'image ne vaut que pour une
+      # démonstration en local.
+      - name: Construire et publier le frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:3000' }}
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          labels: ${{ steps.meta-frontend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

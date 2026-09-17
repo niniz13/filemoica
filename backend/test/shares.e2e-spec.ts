@@ -64,7 +64,7 @@ describe('Partages (e2e)', () => {
       // La connexion est refusée tant que l'adresse n'est pas confirmée.
       await confirmerAdresse(prisma, email);
 
-    return ouvrirSession(app, prisma, email, PASSWORD);
+    return ouvrirSession(app, email, PASSWORD);
   }
 
   /** Dépose un fichier et renvoie son identifiant. */

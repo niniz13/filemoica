@@ -82,7 +82,7 @@ describe('Rotation des cl�s (e2e)', () => {
       // La connexion est refusée tant que l'adresse n'est pas confirmée.
       await confirmerAdresse(prisma, email);
 
-    const cookies = await ouvrirSession(app, prisma, email, PASSWORD);
+    const cookies = await ouvrirSession(app, email, PASSWORD);
 
     const depot = await request(app.getHttpServer())
       .post('/api/files')

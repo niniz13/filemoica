@@ -69,7 +69,7 @@ describe('Authentification (e2e)', () => {
     // jeton : ici on veut seulement une session.
     await confirmerAdresse(prisma, email);
 
-    return ouvrirSession(app, prisma, email, password);
+    return ouvrirSession(app, email, password);
   }
 
   describe('Inscription', () => {
@@ -327,15 +327,24 @@ describe('Authentification (e2e)', () => {
   });
 
   describe('Double authentification', () => {
-    /** Inscrit, confirme, puis lance une connexion. Renvoie le défi émis. */
-    async function amorcerUneConnexion(): Promise<string> {
-      await request(app.getHttpServer())
-        .post('/api/auth/register')
+    /**
+     * Active le second facteur sur un compte déjà connecté.
+     *
+     * Passe par la vraie route plutôt que par une écriture en base : c'est le
+     * chemin qu'emprunte la page de profil, et il mérite d'être exercé.
+     */
+    function activerLeSecondFacteur(cookies: string[], password = PASSWORD) {
+      return request(app.getHttpServer())
+        .patch('/api/auth/mfa')
         .set(...CSRF)
-        .send({ email: EMAIL, password: PASSWORD })
-        .expect(201);
+        .set('Cookie', cookies)
+        .send({ enabled: true, password });
+    }
 
-      await confirmerAdresse(prisma, EMAIL);
+    /** Inscrit, confirme, arme le second facteur, puis lance une connexion. */
+    async function amorcerUneConnexion(): Promise<string> {
+      const cookies = await connecter();
+      await activerLeSecondFacteur(cookies).expect(200);
 
       const defi = await request(app.getHttpServer())
         .post('/api/auth/login')
@@ -354,8 +363,9 @@ describe('Authentification (e2e)', () => {
       });
     }
 
-    // Le cœur du second facteur : le mot de passe ne suffit plus.
-    it('n\'ouvre aucune session à la première étape', async () => {
+    // Réglage par compte, et non imposé à tous : sans cela, chaque connexion
+    // dépendrait d'un envoi de courriel aboutissant.
+    it('est désactivée sur un compte neuf : la connexion pose les cookies', async () => {
       await request(app.getHttpServer())
         .post('/api/auth/register')
         .set(...CSRF)
@@ -369,10 +379,91 @@ describe('Authentification (e2e)', () => {
         .send({ email: EMAIL, password: PASSWORD })
         .expect(200);
 
+      expect(reponse.body.mfaRequired).toBe(false);
+      expect(reponse.body.user.email).toBe(EMAIL);
+      expect(
+        (reponse.get('Set-Cookie') ?? []).some((c) =>
+          c.startsWith('access_token='),
+        ),
+      ).toBe(true);
+    });
+
+    it('expose son état sur le compte courant', async () => {
+      const cookies = await connecter();
+
+      const avant = await request(app.getHttpServer())
+        .get('/api/auth/me')
+        .set('Cookie', cookies)
+        .expect(200);
+      expect(avant.body.mfaEnabled).toBe(false);
+
+      await activerLeSecondFacteur(cookies).expect(200);
+
+      const apres = await request(app.getHttpServer())
+        .get('/api/auth/me')
+        .set('Cookie', cookies)
+        .expect(200);
+      expect(apres.body.mfaEnabled).toBe(true);
+    });
+
+    // Une session volée ne doit pas suffire à désarmer la protection qui rend
+    // justement le vol difficile.
+    it('exige le mot de passe pour changer le réglage', async () => {
+      const cookies = await connecter();
+
+      const reponse = await activerLeSecondFacteur(cookies, 'mauvais-mot-de-passe').expect(401);
+      expect(reponse.body.error).toBe('INVALID_CREDENTIALS');
+
+      const moi = await request(app.getHttpServer())
+        .get('/api/auth/me')
+        .set('Cookie', cookies)
+        .expect(200);
+      expect(moi.body.mfaEnabled).toBe(false);
+    });
+
+    it('refuse de régler le second facteur sans session', async () => {
+      await request(app.getHttpServer())
+        .patch('/api/auth/mfa')
+        .set(...CSRF)
+        .send({ enabled: true, password: PASSWORD })
+        .expect(401);
+    });
+
+    // Le cœur du second facteur, une fois armé : le mot de passe ne suffit plus.
+    it('n\'ouvre aucune session à la première étape', async () => {
+      const cookies = await connecter();
+      await activerLeSecondFacteur(cookies).expect(200);
+
+      const reponse = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(200);
+
       expect(reponse.body.mfaRequired).toBe(true);
       expect(reponse.body.challengeId).toEqual(expect.any(String));
       // Aucun cookie : c'est ce qui distingue cette étape d'une connexion.
       expect(reponse.get('Set-Cookie')).toBeUndefined();
+    });
+
+    it('rend la connexion directe une fois le second facteur coupé', async () => {
+      const cookies = await connecter();
+      await activerLeSecondFacteur(cookies).expect(200);
+
+      await request(app.getHttpServer())
+        .patch('/api/auth/mfa')
+        .set(...CSRF)
+        .set('Cookie', cookies)
+        .send({ enabled: false, password: PASSWORD })
+        .expect(200);
+
+      const reponse = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .set(...CSRF)
+        .send({ email: EMAIL, password: PASSWORD })
+        .expect(200);
+
+      expect(reponse.body.mfaRequired).toBe(false);
     });
 
     it('ne stocke jamais le code en clair', async () => {

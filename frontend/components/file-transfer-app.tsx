@@ -289,6 +289,17 @@ export default function FileTransferApp() {
     null,
   );
   const [codeMfa, setCodeMfa] = useState("");
+  /**
+   * Réglage du second facteur depuis la page « Compte ».
+   *
+   * Le mot de passe est ressaisi ici parce que le serveur l'exige : armer ou
+   * désarmer un facteur d'authentification ne doit pas tenir à la seule
+   * possession d'une session.
+   */
+  const [mdpMfa, setMdpMfa] = useState("");
+  const [mfaBusy, setMfaBusy] = useState(false);
+  const [mfaError, setMfaError] = useState<string | null>(null);
+  const [mfaMessage, setMfaMessage] = useState<string | null>(null);
 
   const [quota, setQuota] = useState<Quota | null>(null);
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -491,12 +502,22 @@ export default function FileTransferApp() {
         return;
       }
 
-      // La connexion n'ouvre plus de session : elle déclenche l'envoi d'un
-      // code. On passe donc à l'écran de saisie, sans quitter `signin`.
-      const defi = await api.login(email, password);
-      setDefiMfa({ id: defi.challengeId, email });
+      // Deux issues, selon le réglage du compte : soit la session est ouverte
+      // ici même, soit un code est parti par courriel et il reste une étape.
+      const issue = await api.login(email, password);
+
+      if (issue.mfaRequired) {
+        setDefiMfa({ id: issue.challengeId, email });
+        setPassword("");
+        setCodeMfa("");
+        return;
+      }
+
+      setUser({ ...issue.user, mfaEnabled: false });
       setPassword("");
-      setCodeMfa("");
+      setScreen("drop");
+      void refreshQuota();
+      void refreshFiles();
     } catch (err) {
       setAuthError(err instanceof ApiError ? err.message : "Une erreur est survenue.");
     } finally {
@@ -519,7 +540,8 @@ export default function FileTransferApp() {
     setAuthError(null);
     try {
       const connecte = await api.verifyMfa(defiMfa.id, codeMfa);
-      setUser(connecte);
+      // Le code a été demandé : le second facteur est forcément armé.
+      setUser({ ...connecte, mfaEnabled: true });
       setDefiMfa(null);
       setCodeMfa("");
       setScreen("drop");
@@ -532,6 +554,34 @@ export default function FileTransferApp() {
       setCodeMfa("");
     } finally {
       setAuthBusy(false);
+    }
+  }
+
+  /**
+   * Arme ou désarme le second facteur sur son propre compte.
+   *
+   * Le mot de passe accompagne la demande : sans lui, le serveur refuse. Une
+   * session volée ne doit pas suffire à couper la protection.
+   */
+  async function basculerMfa(enabled: boolean) {
+    setMfaBusy(true);
+    setMfaError(null);
+    setMfaMessage(null);
+    try {
+      const { mfaEnabled } = await api.setMfa(enabled, mdpMfa);
+      setUser((prev) => (prev ? { ...prev, mfaEnabled } : prev));
+      setMdpMfa("");
+      setMfaMessage(
+        mfaEnabled
+          ? "Double authentification activée. Un code vous sera demandé à chaque connexion."
+          : "Double authentification désactivée.",
+      );
+    } catch (err) {
+      setMfaError(
+        err instanceof ApiError ? err.message : "Le réglage n'a pas pu être enregistré.",
+      );
+    } finally {
+      setMfaBusy(false);
     }
   }
 
@@ -1777,6 +1827,69 @@ export default function FileTransferApp() {
                       <span style={{ color: "#3b4046" }}>{quota?.period ?? "—"}</span>
                     </div>
                   </div>
+
+                  <div
+                    style={{
+                      marginTop: 30,
+                      maxWidth: 420,
+                      padding: 20,
+                      borderRadius: 16,
+                      border: "1px solid #e6e2da",
+                    }}
+                  >
+                    <div style={{ font: `500 15px/1.3 ${sansFont}`, color: "#16181c" }}>
+                      Double authentification
+                    </div>
+                    <div style={{ marginTop: 8, font: `400 13.5px/1.5 ${sansFont}`, color: "#6b7178" }}>
+                      {user?.mfaEnabled
+                        ? "Active : un code à six chiffres vous est envoyé par courriel à chaque connexion."
+                        : "Inactive : le mot de passe suffit à ouvrir une session. En l'activant, un code vous sera envoyé par courriel à chaque connexion."}
+                    </div>
+
+                    <label style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+                      <span style={{ font: `400 13px/1 ${sansFont}`, color: "#6b7178" }}>
+                        Confirmez avec votre mot de passe
+                      </span>
+                      <input
+                        type="password"
+                        value={mdpMfa}
+                        autoComplete="current-password"
+                        onChange={(e) => setMdpMfa(e.target.value)}
+                        className="ftc-input"
+                        style={{ padding: "12px 14px", borderRadius: 11, color: "#16181c", font: `400 14px/1 ${sansFont}` }}
+                      />
+                    </label>
+
+                    {mfaError && (
+                      <div style={{ marginTop: 12, font: `400 13px/1.4 ${sansFont}`, color: "#d2493c" }}>
+                        {mfaError}
+                      </div>
+                    )}
+                    {mfaMessage && (
+                      <div style={{ marginTop: 12, font: `400 13px/1.4 ${sansFont}`, color: "#3b4046" }}>
+                        {mfaMessage}
+                      </div>
+                    )}
+
+                    <button
+                      onClick={() => void basculerMfa(!user?.mfaEnabled)}
+                      disabled={mfaBusy || !mdpMfa}
+                      className={user?.mfaEnabled ? "ftc-btn-secondary" : "ftc-btn-primary"}
+                      style={{
+                        marginTop: 16,
+                        padding: "12px 20px",
+                        borderRadius: 99,
+                        font: `500 14px/1 ${sansFont}`,
+                        opacity: mfaBusy || !mdpMfa ? 0.55 : 1,
+                      }}
+                    >
+                      {(() => {
+                        if (mfaBusy) return "Enregistrement…";
+                        return user?.mfaEnabled ? "Désactiver" : "Activer";
+                      })()}
+                    </button>
+                  </div>
+
                   <button
                     onClick={handleLogout}
                     className="ftc-btn-secondary"

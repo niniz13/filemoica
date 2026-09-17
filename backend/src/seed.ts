@@ -98,6 +98,9 @@ async function main(): Promise<void> {
           // Les comptes de démonstration sont créés déjà confirmés : ils
           // n'ont pas de vraie boîte pour recevoir le lien.
           emailVerifiedAt: new Date(),
+          // Sans second facteur : leur adresse n'existe pas, le code n'arriverait
+          // jamais. Il s'active depuis l'écran Compte pour la démonstration.
+          mfaEnabled: false,
         },
         update: {
           passwordHash,
@@ -106,6 +109,9 @@ async function main(): Promise<void> {
           // Les comptes de démonstration sont créés déjà confirmés : ils
           // n'ont pas de vraie boîte pour recevoir le lien.
           emailVerifiedAt: new Date(),
+          // Sans second facteur : leur adresse n'existe pas, le code n'arriverait
+          // jamais. Il s'active depuis l'écran Compte pour la démonstration.
+          mfaEnabled: false,
         },
       });
 

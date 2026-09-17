@@ -28,6 +28,7 @@ reste lisible d'un bout à l'autre :
 | [Décision — stockage](../docs/decision-stockage-fichiers.md) | Options étudiées, choix retenu, procédure de sauvegarde et restauration |
 | [Configuration de déploiement](../docs/configuration-deploiement.md) | Référence de toutes les variables d'environnement — destinée à SRC |
 | [Coordination SRC](../docs/coordination-src.md) | Ce qui dépend de l'infrastructure, et les réponses attendues |
+| [Intégration continue](../docs/ci-cd.md) | Ce que vérifie le pipeline, les images publiées et comment les tirer |
 
 ---
 

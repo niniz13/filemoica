@@ -1,5 +1,4 @@
 import request from 'supertest';
-import { PasswordService } from '../src/auth/password.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 /**
@@ -50,49 +49,34 @@ export async function confirmerAdresse(
 }
 
 /**
- * Ouvre une session complète : identifiants, puis second facteur.
+ * Ouvre une session et rend les cookies.
  *
- * Le code à six chiffres n'existe qu'en clair dans le courriel — on ne peut
- * donc pas le relire en base, seule son empreinte argon2id y figure. Plutôt
- * que d'intercepter l'envoi, on court-circuite le défi en base : la session
- * s'ouvre comme si le bon code avait été donné.
+ * Le second facteur est **désactivé par défaut** sur un compte neuf : une
+ * connexion ordinaire pose donc directement les cookies, et les tests qui ont
+ * seulement besoin d'être authentifiés n'ont pas à jouer de défi.
  *
- * Le parcours réel du second facteur, lui, est éprouvé dans `auth.e2e-spec.ts`
- * avec un vrai code, en remplaçant l'empreinte par celle d'un code connu.
+ * Le parcours avec second facteur est éprouvé séparément dans
+ * `auth.e2e-spec.ts`, sur un compte où il a été explicitement activé.
  */
 export async function ouvrirSession(
   app: { getHttpServer: () => unknown },
-  prisma: PrismaService,
   email: string,
   password: string,
 ): Promise<string[]> {
-  const CSRF: [string, string] = ['X-Requested-With', 'XMLHttpRequest'];
-
-  const defi = await request(app.getHttpServer() as never)
-    .post('/api/auth/login')
-    .set(...CSRF)
-    .send({ email, password })
-    .expect(200);
-
-  const challengeId = defi.body.challengeId as string;
-
-  // On remplace l'empreinte du code par celle d'un code connu, puis on joue la
-  // route réelle : tout le chemin est exercé, sauf la lecture du courriel.
-  const empreinte = await new PasswordService().hash(CODE_DE_TEST);
-
-  await prisma.mfaChallenge.update({
-    where: { id: challengeId },
-    data: { codeHash: empreinte },
-  });
-
   const session = await request(app.getHttpServer() as never)
-    .post('/api/auth/mfa/verify')
-    .set(...CSRF)
-    .send({ challengeId, code: CODE_DE_TEST })
+    .post('/api/auth/login')
+    .set('X-Requested-With', 'XMLHttpRequest')
+    .send({ email, password })
     .expect(200);
 
   return session.get('Set-Cookie') ?? [];
 }
 
-/** Code utilisé par les tests pour franchir le second facteur. */
+/**
+ * Code utilisé par les tests pour franchir le second facteur.
+ *
+ * Le code réel n'existe en clair que dans le courriel : la base n'en garde que
+ * l'empreinte argon2id. Les tests réécrivent donc l'empreinte avec celle de ce
+ * code, puis jouent la vraie route de vérification.
+ */
 export const CODE_DE_TEST = '123456';

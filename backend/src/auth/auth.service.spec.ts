@@ -11,6 +11,7 @@ describe('AuthService', () => {
   let auth: AuthService;
   let findUnique: jest.Mock;
   let create: jest.Mock;
+  let update: jest.Mock;
   let verify: jest.Mock;
   let verifyDummy: jest.Mock;
   let openSession: jest.Mock;
@@ -20,6 +21,7 @@ describe('AuthService', () => {
   beforeEach(async () => {
     findUnique = jest.fn();
     create = jest.fn();
+    update = jest.fn();
     verify = jest.fn();
     verifyDummy = jest.fn().mockResolvedValue(false);
     emettre = jest.fn().mockResolvedValue({ challengeId: 'defi-1' });
@@ -35,7 +37,7 @@ describe('AuthService', () => {
         AuthService,
         {
           provide: PrismaService,
-          useValue: { user: { findUnique, create } },
+          useValue: { user: { findUnique, create, update } },
         },
         {
           provide: PasswordService,
@@ -110,14 +112,16 @@ describe('AuthService', () => {
   });
 
   describe('Connexion', () => {
-    // Le cœur du second facteur : de bons identifiants ne suffisent plus.
-    it('émet un défi au lieu d\'ouvrir une session', async () => {
+    // Le cœur du second facteur, quand il est armé : de bons identifiants ne
+    // suffisent plus.
+    it('émet un défi au lieu d\'ouvrir une session quand le compte l\'exige', async () => {
       findUnique.mockResolvedValue({
         id: 'user-1',
         email: 'alice@example.fr',
         role: 'USER',
         passwordHash: '$argon2id$empreinte',
         emailVerifiedAt: new Date(),
+        mfaEnabled: true,
       });
       verify.mockResolvedValue(true);
 
@@ -127,6 +131,28 @@ describe('AuthService', () => {
       expect(emettre).toHaveBeenCalledWith('user-1', 'alice@example.fr');
       // Aucune session tant que le code n'est pas donné.
       expect(openSession).not.toHaveBeenCalled();
+    });
+
+    // Le réglage est par compte : sans second facteur, la connexion se termine
+    // en une étape.
+    it('ouvre directement la session quand le second facteur est coupé', async () => {
+      findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'alice@example.fr',
+        role: 'USER',
+        passwordHash: '$argon2id$empreinte',
+        emailVerifiedAt: new Date(),
+        mfaEnabled: false,
+      });
+      verify.mockResolvedValue(true);
+
+      const result = await auth.login('alice@example.fr', 'phrase-longue-ok');
+
+      expect(result).toMatchObject({
+        accessToken: 'access',
+        user: { id: 'user-1', email: 'alice@example.fr', role: 'USER' },
+      });
+      expect(emettre).not.toHaveBeenCalled();
     });
 
     it('refuse un mot de passe incorrect', async () => {
@@ -242,6 +268,31 @@ describe('AuthService', () => {
       const result = await auth.ouvrirSessionApresMfa('defi-1', '123456');
 
       expect(JSON.stringify(result?.user)).not.toContain('argon2');
+    });
+  });
+
+  describe('Réglage du second facteur', () => {
+    it('enregistre l\'activation quand le mot de passe est bon', async () => {
+      findUnique.mockResolvedValue({ passwordHash: '$argon2id$empreinte' });
+      verify.mockResolvedValue(true);
+
+      expect(await auth.changerMfa('user-1', true, 'phrase-longue-ok')).toBe(
+        true,
+      );
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { mfaEnabled: true },
+      });
+    });
+
+    // Sans cette confirmation, une session volée suffirait à désarmer la
+    // protection qui rendait justement le vol difficile.
+    it('ne touche à rien quand le mot de passe est faux', async () => {
+      findUnique.mockResolvedValue({ passwordHash: '$argon2id$empreinte' });
+      verify.mockResolvedValue(false);
+
+      expect(await auth.changerMfa('user-1', false, 'mauvais')).toBe(false);
+      expect(update).not.toHaveBeenCalled();
     });
   });
 });

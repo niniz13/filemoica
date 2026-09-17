@@ -14,7 +14,7 @@ export class ApiError extends Error {
 export type UserRole = "USER" | "ADMIN";
 
 /**
- * Ce que rend la première étape de connexion.
+ * Ce que rend la connexion quand le compte exige un second facteur.
  *
  * `challengeId` n'est pas un secret : le secret, c'est le code à six chiffres
  * envoyé par courriel. Il désigne simplement la tentative en cours.
@@ -23,6 +23,20 @@ export interface MfaChallenge {
   mfaRequired: true;
   challengeId: string;
 }
+
+/** Ce que rend la connexion quand le compte n'exige pas de code. */
+export interface DirectLogin {
+  mfaRequired: false;
+  user: User;
+}
+
+/**
+ * Les deux issues d'une connexion.
+ *
+ * `mfaRequired` sert de discriminant : c'est le seul champ à regarder pour
+ * savoir si la session est ouverte ou s'il reste un code à saisir.
+ */
+export type LoginOutcome = MfaChallenge | DirectLogin;
 
 export interface User {
   id: string;
@@ -34,6 +48,8 @@ export interface CurrentUser {
   id: string;
   email: string;
   role: UserRole;
+  /** Le second facteur est-il armé ? Se règle depuis la page « Compte ». */
+  mfaEnabled: boolean;
 }
 
 export interface Quota {
@@ -277,12 +293,13 @@ export const api = {
   register: (email: string, password: string) =>
     request<User>("/api/auth/register", { method: "POST", body: { email, password } }),
   /**
-   * Première étape : vérifie les identifiants et déclenche l'envoi du code.
+   * Vérifie les identifiants.
    *
-   * **N'ouvre aucune session.** Elle rend un défi à relever sur `verifyMfa`.
+   * Deux issues, à distinguer sur `mfaRequired` : soit la session est ouverte,
+   * soit un code est parti par courriel et il faut enchaîner sur `verifyMfa`.
    */
   login: (email: string, password: string) =>
-    request<MfaChallenge>("/api/auth/login", {
+    request<LoginOutcome>("/api/auth/login", {
       method: "POST",
       body: { email, password },
     }),
@@ -291,6 +308,17 @@ export const api = {
     request<User>("/api/auth/mfa/verify", {
       method: "POST",
       body: { challengeId, code },
+    }),
+  /**
+   * Arme ou désarme le second facteur sur son propre compte.
+   *
+   * Le mot de passe est redemandé : le serveur refuse de changer ce réglage sur
+   * la seule foi d'une session, qui peut avoir été volée.
+   */
+  setMfa: (enabled: boolean, password: string) =>
+    request<{ mfaEnabled: boolean }>("/api/auth/mfa", {
+      method: "PATCH",
+      body: { enabled, password },
     }),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
   /** Confirme une adresse à partir du jeton reçu par courriel. */

@@ -49,6 +49,27 @@ describe('validateEnv', () => {
     );
   });
 
+  // Une variable déclarée mais vide est le cas le plus courant, pas un cas
+  // tordu : c'est ce que contient `.env.example`, et ce que produit Docker
+  // Compose pour une variable non renseignée. La traiter comme une chaîne vide
+  // empêchait le service de démarrer sans clé Brevo, alors qu'elle est
+  // justement facultative hors production.
+  it('traite une clé Brevo vide comme absente', () => {
+    const config = validateEnv({ ...validEnv(), BREVO_API_KEY: '' });
+
+    expect(config.BREVO_API_KEY).toBeUndefined();
+  });
+
+  it('refuse néanmoins une clé Brevo vide en production', () => {
+    expect(() =>
+      validateEnv({
+        ...validEnv(),
+        NODE_ENV: 'production',
+        BREVO_API_KEY: '',
+      }),
+    ).toThrow(/BREVO_API_KEY/);
+  });
+
   // Le cœur de la sécurité du chiffrement au repos : une clé trop courte
   // dégraderait l'AES-256 sans que personne ne s'en aperçoive.
   it.each([
