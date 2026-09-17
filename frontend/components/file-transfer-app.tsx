@@ -62,6 +62,31 @@ const SANS_FONT = "var(--font-space-grotesk), system-ui, sans-serif";
 /** Le serveur exige entre 6 et 128 caractères pour un mot de passe de lien. */
 const SHARE_PASSWORD_MIN = 6;
 
+/** Nombre de noms de fichiers cités avant de basculer sur un décompte. */
+const NOMS_CITES = 2;
+
+/**
+ * Résume une liste de fichiers en une ligne lisible.
+ *
+ * Coller bout à bout dix-neuf noms produit une chaîne de plus de mille
+ * caractères. Même tronquée à l'affichage, elle reste une seule ligne
+ * insécable que le navigateur mesure entièrement : elle étire la colonne, qui
+ * étire la page, et toute l'interface finit par sortir de l'écran.
+ *
+ * On cite donc les premiers noms et on compte le reste. La liste complète
+ * n'est pas perdue pour autant : elle est portée par l'attribut `title`, donc
+ * lisible au survol.
+ */
+function resumerFichiers(noms: string[]): string {
+  if (noms.length <= NOMS_CITES) {
+    return noms.join(", ");
+  }
+
+  const restants = noms.length - NOMS_CITES;
+
+  return `${noms.slice(0, NOMS_CITES).join(", ")} et ${restants} autre${restants > 1 ? "s" : ""}`;
+}
+
 /** Durées proposées, bornées par le serveur : de 1 heure à 30 jours. */
 const SHARE_DURATIONS: { hours: number; label: string }[] = [
   { hours: 1, label: "1 heure" },
@@ -105,7 +130,10 @@ function ShareOptions({
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: "none" }}>
+    // `1 1 240px` et non `none` : en `none`, ce bloc impose sa largeur naturelle
+    // — l'input et ses deux boutons font près de 490 px — à un panneau qui peut
+    // descendre à 290. Il débordait alors hors de l'écran.
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: "1 1 240px", minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
         <label
           style={{
@@ -167,7 +195,9 @@ function ShareOptions({
           Mot de passe <span style={{ opacity: 0.7 }}>(facultatif)</span>
         </label>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {/* `wrap` : « Voir » et « Copier » descendent sous le champ plutôt que
+            de l'écraser quand la colonne est étroite. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <input
             id="mot-de-passe-du-lien"
             type={visible ? "text" : "password"}
@@ -183,7 +213,9 @@ function ShareOptions({
               borderRadius: 12,
               border: `1px solid ${motDePasseTropCourt ? "#d2493c" : "#dcd9d4"}`,
               background: "#ffffff",
-              flex: 1,
+              // Base de 180 px : en dessous, ce sont les boutons qui passent à
+              // la ligne, plutôt que le champ qui devient inutilisable.
+              flex: "1 1 180px",
               minWidth: 0,
               maxWidth: 340,
             }}
@@ -1387,7 +1419,11 @@ export default function FileTransferApp() {
                     </div>
                   </div>
 
-                  <div style={{ flex: "1 1 340px", minWidth: 290, display: "flex", flexDirection: "column", minHeight: 0, background: "#ffffff", padding: "0 26px 26px" }}>
+                  {/* `overflowX: hidden` est un filet de sécurité, pas la
+                      solution : tout ce qui est à l'intérieur sait déjà se
+                      tronquer. Il garantit qu'un contenu inattendu sera coupé
+                      ici plutôt que de pousser toute la page hors de l'écran. */}
+                  <div style={{ flex: "1 1 340px", minWidth: 290, display: "flex", flexDirection: "column", minHeight: 0, overflowX: "hidden", background: "#ffffff", padding: "0 26px 26px" }}>
                     <div style={{ padding: "6px 6px 14px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                       <div style={{ flex: 1, font: `400 14px/1 ${sansFont}`, color: "#6b7178" }}>
                         {uploads.length === 0 ? "Aucun envoi pour l'instant" : `${uploads.length} envoi${uploads.length > 1 ? "s" : ""} cette session`}
@@ -1403,8 +1439,14 @@ export default function FileTransferApp() {
                           style={{
                             padding: "9px 16px",
                             borderRadius: 99,
-                            font: `500 13px/1 ${sansFont}`,
+                            // `1.25` et non `1` : l'intitulé peut atteindre
+                            // « Créer un lien à usage unique (3) », qui passe
+                            // sur deux lignes dans une colonne étroite.
+                            font: `500 13px/1.25 ${sansFont}`,
                             flex: "none",
+                            // Sans ce plafond, le bouton impose sa largeur
+                            // naturelle et pousse la ligne hors de l'écran.
+                            maxWidth: "100%",
                             opacity: pendingShareCount === 0 || shareBusy || !optionsValides ? 0.5 : 1,
                           }}
                         >
@@ -1426,14 +1468,22 @@ export default function FileTransferApp() {
                     )}
 
                     {sessionShares.length > 0 && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "0 6px 16px" }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "0 6px 16px", minWidth: 0 }}>
                         {sessionShares.map((share) => (
                           <div
                             key={share.id}
-                            style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, borderRadius: 14, background: "#f6f4f0" }}
+                            // `wrap` : le QR code et les deux boutons ne se
+                            // compriment pas (`flex: none`). Sans autorisation
+                            // de passer à la ligne, leur largeur cumulée dépasse
+                            // celle du panneau dès que la fenêtre se resserre,
+                            // et le contenu sort de l'écran.
+                            style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, borderRadius: 14, background: "#f6f4f0", flexWrap: "wrap" }}
                           >
                             <ShareQrCode url={share.url} size={44} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
+                            {/* `1 1 180px` plutôt que `1` : en dessous de cette
+                                largeur, le bloc déclenche le retour à la ligne
+                                des boutons au lieu de les écraser. */}
+                            <div style={{ flex: "1 1 180px", minWidth: 0 }}>
                               <div
                                 style={{
                                   font: `400 13px/1.5 var(--font-ibm-plex-mono), monospace`,
@@ -1446,6 +1496,8 @@ export default function FileTransferApp() {
                                 {share.url}
                               </div>
                               <div
+                                // La liste complète reste consultable au survol.
+                                title={share.revoked ? undefined : share.fileNames.join(", ")}
                                 style={{
                                   marginTop: 4,
                                   font: `400 12.5px/1.4 ${sansFont}`,
@@ -1457,34 +1509,37 @@ export default function FileTransferApp() {
                               >
                                 {share.revoked
                                   ? "Lien révoqué — l'accès est coupé"
-                                  : `${share.singleUse ? "Usage unique · " : ""}${share.protege ? "Protégé · " : ""}${share.fileNames.length} fichier${share.fileNames.length > 1 ? "s" : ""} · ${share.fileNames.join(", ")}`}
+                                  : `${share.singleUse ? "Usage unique · " : ""}${share.protege ? "Protégé · " : ""}${share.fileNames.length} fichier${share.fileNames.length > 1 ? "s" : ""} · ${resumerFichiers(share.fileNames)}`}
                               </div>
                             </div>
+                            {/* Les deux boutons dans un même bloc : ils passent
+                                à la ligne ensemble, jamais l'un sans l'autre. */}
                             {!share.revoked && (
-                              <button
-                                onClick={() => copyShareLink(share.id, share.url)}
-                                className="ftc-btn-secondary"
-                                style={{ padding: "8px 14px", borderRadius: 99, font: `400 13px/1 ${sansFont}`, flex: "none" }}
-                              >
-                                {copiedShareId === share.id ? "Copié" : "Copier le lien"}
-                              </button>
-                            )}
-                            {!share.revoked && (
-                              <button
-                                onClick={() => handleRevokeShare(share.id)}
-                                disabled={revokingShareId === share.id}
-                                className="ftc-btn-secondary"
-                                style={{
-                                  padding: "8px 14px",
-                                  borderRadius: 99,
-                                  font: `400 13px/1 ${sansFont}`,
-                                  flex: "none",
-                                  color: "#d2493c",
-                                  opacity: revokingShareId === share.id ? 0.5 : 1,
-                                }}
-                              >
-                                {revokingShareId === share.id ? "Révocation…" : "Révoquer"}
-                              </button>
+                              <div style={{ display: "flex", gap: 8, flex: "none", marginLeft: "auto" }}>
+                                <button
+                                  onClick={() => copyShareLink(share.id, share.url)}
+                                  className="ftc-btn-secondary"
+                                  style={{ padding: "8px 14px", borderRadius: 99, font: `400 13px/1 ${sansFont}`, flex: "none", whiteSpace: "nowrap" }}
+                                >
+                                  {copiedShareId === share.id ? "Copié" : "Copier le lien"}
+                                </button>
+                                <button
+                                  onClick={() => handleRevokeShare(share.id)}
+                                  disabled={revokingShareId === share.id}
+                                  className="ftc-btn-secondary"
+                                  style={{
+                                    padding: "8px 14px",
+                                    borderRadius: 99,
+                                    font: `400 13px/1 ${sansFont}`,
+                                    flex: "none",
+                                    whiteSpace: "nowrap",
+                                    color: "#d2493c",
+                                    opacity: revokingShareId === share.id ? 0.5 : 1,
+                                  }}
+                                >
+                                  {revokingShareId === share.id ? "Révocation…" : "Révoquer"}
+                                </button>
+                              </div>
                             )}
                           </div>
                         ))}
@@ -1747,6 +1802,7 @@ export default function FileTransferApp() {
                         <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 6px" }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div
+                              title={s.files.map((f) => f.fileName).join(", ")}
                               style={{
                                 font: `400 15px/1.25 ${sansFont}`,
                                 color: "#16181c",
@@ -1756,7 +1812,7 @@ export default function FileTransferApp() {
                               }}
                             >
                               {s.files.length > 0
-                                ? s.files.map((f) => f.fileName).join(", ")
+                                ? resumerFichiers(s.files.map((f) => f.fileName))
                                 : "Plus aucun fichier"}
                             </div>
                             <div style={{ marginTop: 4, font: `400 13px/1.3 ${sansFont}`, color: "#6b7178" }}>
