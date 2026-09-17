@@ -248,11 +248,17 @@ d'un coup.
 
 ### Julien DOURLET, SRC
 
-**Ce que j'ai décidé, mesuré ou corrigé :**
-*À COMPLÉTER*
+Ce que j'ai décidé, mesuré ou corrigé :
 
-**Une conséquence de mes choix sur l'application :**
-*À COMPLÉTER*
+Décidé : Mise en place d'une architecture d'observabilité hybride (proactive via Uptime Kuma sur le sous-domaine dédié status.filemoica.duckdns.org et réactive via Grafana/Loki), couplée à une stratégie de sauvegarde incrémentale automatisée avec Restic (dépôt local des dumps PostgreSQL et des fichiers uploads).
+
+Mesuré : Validation expérimentale d'un RPO de 24 heures (Recovery Point Objective) et d'un RTO < 5 minutes (Recovery Time Objective) grâce au déroulement complet d'un crash-test de destruction/restauration en conditions réelles.
+
+Corrigé : Résolution du conflit de routage SPA entre Caddy et Next.js en isolant la page de statut sur un sous-domaine propre, et correction des requêtes LogQL sous Grafana pour éliminer les erreurs d'expressions régulières vides.
+
+Une conséquence de mes choix sur l'application :
+
+Garantie de résilience et détection instantanée : L'application dispose d'un plan de reprise d'activité (DRP) formellement éprouvé qui élimine tout risque de perte définitive de données. En cas de panne critique ou de corruption, l'équipe est alertée immédiatement sur Discord/Telegram et la remise en service complète s'effectue en quelques commandes sans altérer l'expérience utilisateur globale.
 
 ### Killian DURANTI MACIA, SRC
 
