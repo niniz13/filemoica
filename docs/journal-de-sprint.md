@@ -201,12 +201,38 @@ SRC : un choix produit qui crée une obligation côté infrastructure.
 - Conteneurisation du frontend et pile complète à la racine du dépôt.
 
 **Ce que j'ai décidé, mesuré ou corrigé :**
-*À COMPLÉTER — Jérémy*
+
+- **Prototype d'interface sans backend** — l'UI et ses animations
+  (`lib/file-transfer-engine.ts`) ont d'abord tourné sur un catalogue de
+  fichiers fictif, pour avancer sur l'UX pendant que le backend se
+  construisait. Une fois l'API prête, seule la couche de données a été
+  remplacée par `lib/api.ts` ; l'animation, purement visuelle, est restée
+  telle quelle.
+- **Table de jointure plutôt qu'un `fileId` unique sur `Share`** — pour que le
+  multi-fichiers tienne, une session de dépôt entière est désormais couverte
+  par un modèle `ShareFile` (voir `schema.prisma`), avec un plafond volontaire
+  de **50 fichiers par lien** : au-delà, un seul jeton devient
+  disproportionnellement précieux à voler.
+- **Port et version Node figés** — frontend sur le port **3001** (le backend
+  occupe déjà 3000), backend épinglé sur **Node 24.9.0** exactement
+  (`backend/.nvmrc`) et pas seulement « 24 » : c'est le patch minimal où Jest
+  sait charger l'ESM de NestJS 12 (décision 2, §3).
+- **Le rôle n'est jamais porté par le jeton de session** — en écrivant le
+  panneau admin, il fallait qu'un changement de rôle décidé par un
+  administrateur soit visible tout de suite, pas seulement à la prochaine
+  connexion (jusqu'à 15 minutes plus tard, décision 3). `GET /api/auth/me`
+  relit donc le rôle en base à chaque appel, comme côté administration.
+- **Progression d'envoi mesurée, pas simulée** — l'upload passe par
+  `XMLHttpRequest` plutôt que `fetch`, seul moyen d'obtenir un évènement de
+  progression réel sur les octets déjà envoyés.
 
 **Une conséquence de mes choix sur l'infrastructure :**
-*À COMPLÉTER — Jérémy.* Par exemple : l'URL de l'API est **figée au moment de la
-construction** de l'image frontend, donc changer le domaine impose de
-reconstruire — ce n'est pas une variable qu'on ajuste au déploiement.
+
+L'URL de l'API (`NEXT_PUBLIC_API_URL`) est inlinée dans le bundle Next.js **au
+moment de la construction** de l'image frontend (`frontend/Dockerfile`), pas
+lue au démarrage comme les variables du backend. Changer de domaine ou
+d'environnement impose donc de reconstruire l'image frontend — SRC ne peut pas
+se contenter d'ajuster une variable au déploiement, il faut relancer le build.
 
 ### *À COMPLÉTER — nom* — SRC
 
