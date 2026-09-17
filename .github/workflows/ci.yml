@@ -4,7 +4,7 @@
 # Deux temps, dans cet ordre, et le second ne démarre que si le premier a réussi
 # (`needs:`) :
 #
-#   1. Vérifier  — lint, types, 143 tests unitaires, 189 tests de bout en bout
+#   1. Vérifier  — lint, types, 145 tests unitaires, 189 tests de bout en bout
 #                  contre un vrai PostgreSQL, puis compilation.
 #   2. Livrer    — construire les images Docker et les publier sur GHCR, d'où
 #                  l'équipe SRC les tire.

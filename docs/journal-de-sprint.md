@@ -6,7 +6,7 @@ Service de transfert de fichiers chiffrés, à liens temporaires.
 | | |
 |---|---|
 | **IW — application, API, données, tests, sécurité applicative** | Martin Simon · Jérémy Gross |
-| **SRC — hébergement, réseau, déploiement, exploitation** | *À COMPLÉTER — noms* |
+| **SRC — hébergement, réseau, déploiement, exploitation** | Enzo ANSELMO · Julien DOURLET · Killian DURANTI MACIA |
 
 > Ce journal décrit ce qui a été **réellement fait et vérifié** pendant la
 > semaine. Les mesures indiquées sont datées et reproductibles ; celles qui sont
@@ -58,7 +58,7 @@ Le sprint part d'un dépôt **quasiment vide**, créé le 15/09.
 Le cadrage initial prévoyait **Express**. Il a été revu dès le premier jour
 (voir décision 1).
 
-**Version de référence du rendu :** *À COMPLÉTER — tag git posé jeudi*
+**Version de référence du rendu :** tag `v1.0.0`
 
 ---
 
@@ -208,7 +208,7 @@ SRC : un choix produit qui crée une obligation côté infrastructure.
 construction** de l'image frontend, donc changer le domaine impose de
 reconstruire — ce n'est pas une variable qu'on ajuste au déploiement.
 
-### *À COMPLÉTER — nom* — SRC
+### Enzo ANSELMO, SRC
 
 **Ce que j'ai décidé, mesuré ou corrigé :**
 *À COMPLÉTER* — hébergement, reverse proxy, HTTPS, déploiement, sauvegardes,
@@ -220,7 +220,7 @@ partagé côté backend, ou le nombre de relais devant le service détermine
 `TRUST_PROXY_HOPS`, sans lequel la limitation de tentatives bloque tout le monde
 d'un coup.
 
-### *À COMPLÉTER — nom* — SRC
+### Julien DOURLET, SRC
 
 **Ce que j'ai décidé, mesuré ou corrigé :**
 *À COMPLÉTER*
@@ -228,7 +228,7 @@ d'un coup.
 **Une conséquence de mes choix sur l'application :**
 *À COMPLÉTER*
 
-### *À COMPLÉTER — nom* — SRC
+### Killian DURANTI MACIA, SRC
 
 **Ce que j'ai décidé, mesuré ou corrigé :**
 *À COMPLÉTER*

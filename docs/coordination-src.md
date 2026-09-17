@@ -318,7 +318,7 @@ quelques gigaoctets suffisent largement.
 | # | Point | Urgence |
 |---|---|---|
 | 1 | **`BREVO_API_KEY` configurée et expéditeur validé** — sans quoi personne ne se connecte | 🔴 **Nouveau** |
-| 2 | **Les deux migrations appliquées** (`verification_adresse_email`, `double_authentification`) | 🔴 **Nouveau** |
+| 2 | **Les trois migrations appliquées** (`verification_adresse_email`, `double_authentification`, `mfa_activable_par_compte`) | 🔴 **Nouveau** |
 | 3 | Volume monté, appartenant à l'uid 1000 | 🔴 Avant le déploiement |
 | 4 | Secrets générés, stockés **hors des sauvegardes** | 🔴 Avant le déploiement |
 | 5 | Sauvegardes planifiées — **les deux artefacts** | 🔴 Avant le déploiement |
