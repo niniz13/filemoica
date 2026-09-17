@@ -234,11 +234,26 @@ lue au démarrage comme les variables du backend. Changer de domaine ou
 d'environnement impose donc de reconstruire l'image frontend — SRC ne peut pas
 se contenter d'ajuster une variable au déploiement, il faut relancer le build.
 
-### Enzo ANSELMO, SRC
+
+
+### Enzo ANSELMO — SRC
 
 **Ce que j'ai décidé, mesuré ou corrigé :**
-*À COMPLÉTER* — hébergement, reverse proxy, HTTPS, déploiement, sauvegardes,
-supervision.
+
+* **Nom de domaine et DNS** — j'ai mis en place l'accès public au service via le domaine `filemoica.duckdns.org` et configuré les enregistrements DNS nécessaires pour faire pointer les différents services vers la machine de production.
+
+* **Reverse proxy Caddy** — j'ai configuré Caddy comme point d'entrée public de l'infrastructure. Le routage par domaine et sous-domaines permet d'orienter les requêtes vers l'application principale, Grafana et les services protégés par le WAF, sans exposer directement leurs ports internes.
+
+* **HTTPS et gestion des certificats** — j'ai configuré la terminaison TLS au niveau de Caddy afin de sécuriser les accès en HTTPS. 
+
+* **Intégration du WAF** — j'ai intégré le pare-feu applicatif dans le chemin d'accès à l'application afin de filtrer les requêtes HTTP avant qu'elles n'atteignent les services applicatifs.
+
+* **Validation du routage** — j'ai vérifié la résolution DNS, l'accès HTTPS et le routage vers les différents services afin de confirmer que chaque domaine ou sous-domaine arrive bien sur le service attendu.
+
+**Une conséquence de mes choix sur l'application :**
+
+Le passage par Caddy et le WAF impose de coordonner la configuration réseau avec l'application. Le WAF doit autoriser les routes, méthodes HTTP et tailles de requêtes nécessaires aux transferts de fichiers, tandis que les en-têtes transmis par les reverse proxies doivent être correctement interprétés par le backend. La centralisation du HTTPS dans Caddy permet en revanche aux services internes de rester isolés du réseau public.
+
 
 **Une conséquence de mes choix sur l'application :**
 *À COMPLÉTER.* Par exemple : le choix d'une instance unique a écarté le stockage
