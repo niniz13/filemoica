@@ -1,44 +1,16 @@
-# Journal de sprint — filemoica
+# Journal de sprint : filemoica
 
 **Tech Venture Sprint · 15 → 18 septembre 2026**
 Service de transfert de fichiers chiffrés, à liens temporaires.
 
 | | |
 |---|---|
-| **IW — application, API, données, tests, sécurité applicative** | Martin Simon · Jérémy Gross |
-| **SRC — hébergement, réseau, déploiement, exploitation** | Enzo ANSELMO · Julien DOURLET · Killian DURANTI MACIA |
+| **IW : application, API, données, tests, sécurité applicative** | Martin Simon · Jérémy Gross |
+| **SRC : hébergement, réseau, déploiement, exploitation** | Enzo ANSELMO · Julien DOURLET · Killian DURANTI MACIA |
 
 > Ce journal décrit ce qui a été **réellement fait et vérifié** pendant la
 > semaine. Les mesures indiquées sont datées et reproductibles ; celles qui sont
 > estimées le sont dites.
-
----
-
-## 📝 À lire avant de compléter — pour toute l'équipe
-
-Ce document est **un livrable commun**. Chacun remplit **sa propre section** au
-§4 : personne ne doit écrire la contribution d'un autre.
-
-**Cherchez `À COMPLÉTER` dans le fichier** — chaque occurrence est une case à
-remplir. Il ne doit plus en rester une seule au moment du rendu.
-
-**Deux choses sont attendues de chacun**, et elles valent **4 points
-individuels** :
-
-1. **Ce que vous avez fait**, de façon vérifiable — le sujet précise que *« le
-   nombre de modifications du code ne suffit pas à établir une contribution »*.
-   Dites plutôt ce que vous avez décidé, mesuré ou corrigé.
-2. **Une conséquence de vos choix sur l'autre spécialité.** C'est la question
-   que le jury posera, et il peut changer le contexte pour voir si vous suivez.
-
-**Ce qu'il vaut mieux ne pas modifier sans en parler :** les décisions du §3 et
-les chiffres du §8 sont vérifiables dans le dépôt. Si l'un vous paraît faux,
-signalez-le plutôt que de le réécrire — il est sans doute exact, ou alors c'est
-le code qu'il faut corriger.
-
-**Relisez la description qu'on a faite de vous.** Elle a été écrite depuis
-l'historique git et le code. Corrigez-la si elle est inexacte : vous devrez
-pouvoir l'expliquer vendredi.
 
 ---
 
@@ -48,7 +20,7 @@ Le sprint part d'un dépôt **quasiment vide**, créé le 15/09.
 
 | Élément | État au démarrage |
 |---|---|
-| Premier commit | `9eccdd6` — 15/09, Jérémy Gross |
+| Premier commit | `9eccdd6`, 15/09, Jérémy Gross |
 | Frontend | Squelette Next.js, aucune page fonctionnelle |
 | Backend | **Inexistant** |
 | Base de données | Aucune |
@@ -65,7 +37,7 @@ Le cadrage initial prévoyait **Express**. Il a été revu dès le premier jour
 ## 2. Périmètre retenu
 
 **Le public :** une personne ou une petite structure qui doit transmettre un
-document sensible — un contrat, un bulletin de paie, un certificat — à un
+document sensible, un contrat, un bulletin de paie, un certificat, à un
 destinataire qui n'a pas de compte et n'en veut pas.
 
 **Le problème :** la pièce jointe d'un courriel reste indéfiniment dans une
@@ -76,7 +48,7 @@ de la retirer.
 
 1. Déposer un fichier, en tirer un lien à durée limitée, éventuellement protégé
    par un mot de passe, révocable à tout moment.
-2. **Le destinataire n'a pas de compte** — il ouvre le lien et récupère le
+2. **Le destinataire n'a pas de compte**, il ouvre le lien et récupère le
    fichier.
 3. Les fichiers sont **chiffrés au repos**, et une fuite de la base seule ne
    donne rien d'exploitable.
@@ -89,7 +61,7 @@ de la retirer.
 *Le sujet en demande deux. En voici trois, retenues parce qu'elles engagent les
 deux spécialités et qu'elles ont chacune changé le travail de l'autre.*
 
-### Décision 1 — Le stockage des fichiers *(IW + SRC, 16/09)*
+### Décision 1 : Le stockage des fichiers *(IW + SRC, 16/09)*
 
 **La question posée à SRC :** combien d'instances vise-t-on, et le service
 doit-il survivre à la perte de sa machine ?
@@ -98,7 +70,7 @@ doit-il survivre à la perte de sa machine ?
 bascule d'hôte, durabilité non impérative.
 
 **Ce qu'on en a conclu :** ces trois réponses écartent la seule raison qui
-aurait justifié un stockage partagé. **Volume Docker nommé**, donc — aucune
+aurait justifié un stockage partagé. **Volume Docker nommé**, donc : aucune
 ligne de code backend, aucun service de plus à superviser, aucune clé d'accès
 supplémentaire à protéger.
 
@@ -107,20 +79,20 @@ d'un cran sans le résoudre, tout en ajoutant un service et deux secrets.
 
 **Conséquence pour IW :** le backend écrit derrière une interface `FileStorage`,
 ce qui rend le passage au stockage objet réalisable en une heure si le besoin
-apparaissait — mais ce code n'a pas été écrit, faute de besoin.
+apparaissait, mais ce code n'a pas été écrit, faute de besoin.
 
 **Conséquence pour SRC :** la sauvegarde devient obligatoire, alors que la
-durabilité n'était pas exigée — parce que la restauration est un livrable noté.
+durabilité n'était pas exigée, parce que la restauration est un livrable noté.
 
 Analyse complète : [decision-stockage-fichiers.md](decision-stockage-fichiers.md).
 
-### Décision 2 — Node 24 imposé à l'image de déploiement *(IW → SRC, 15/09)*
+### Décision 2 : Node 24 imposé à l'image de déploiement *(IW → SRC, 15/09)*
 
 **Découvert en écrivant les premiers tests :** NestJS 12 est distribué
 uniquement en ESM, et Jest ne sait charger de l'ESM qu'à partir de Node 24.9.
 
 **L'arbitrage :** revenir à NestJS 11 pour rester sur Node 22, ou monter le
-poste et l'image de production en Node 24. Nous avons choisi Node 24 — les
+poste et l'image de production en Node 24. Nous avons choisi Node 24, les
 gardes et les pipes de NestJS 12 rendent les contrôles d'accès lisibles, ce qui
 est exactement ce qu'il fallait pouvoir montrer.
 
@@ -128,7 +100,7 @@ est exactement ce qu'il fallait pouvoir montrer.
 `node:22` ne fonctionnera pas. C'est verrouillé dans `package.json` et signalé
 en gras dans le document de coordination.
 
-### Décision 3 — L'authentification renforcée, et son risque assumé *(IW, 16/09)*
+### Décision 3 : L'authentification renforcée, et son risque assumé *(IW, 16/09)*
 
 **La demande :** vérification de l'adresse à l'inscription et double
 authentification par courriel.
@@ -136,11 +108,28 @@ authentification par courriel.
 **Le risque signalé avant de coder :** rendre la double authentification
 obligatoire pour tous fait dépendre **toute** connexion d'un envoi de courriel.
 Sans réseau le jour de la soutenance, la démonstration s'arrête à l'écran de
-connexion. Trois options ont été posées — activable par compte, obligatoire, ou
+connexion. Trois options ont été posées, activable par compte, obligatoire, ou
 vérification d'adresse seule.
 
-**Le choix :** obligatoire pour tous, et blocage complet de la connexion tant
-que l'adresse n'est pas confirmée.
+**Le choix initial :** obligatoire pour tous, et blocage complet de la connexion
+tant que l'adresse n'est pas confirmée.
+
+**Le risque s'est réalisé le lendemain, et la décision a été révisée.** Les
+comptes de démonstration utilisent des adresses `@filemoica.fr` qui n'existent
+pas : ils ne recevaient donc jamais leur code, et sont devenus inutilisables du
+jour au lendemain. La double authentification est désormais **un réglage par
+compte**, désactivé par défaut, que chacun arme depuis sa page de profil. Sa
+bascule exige le mot de passe : une session volée ne doit pas suffire à désarmer
+la protection qui rend justement le vol difficile.
+
+La confirmation d'adresse, elle, **reste obligatoire** : c'est elle qui garantit
+qu'un compte correspond à une boîte réellement détenue.
+
+*Ce que cet aller-retour a coûté et appris :* imposer un second facteur à tous
+faisait dépendre chaque connexion d'un service tiers joignable. Le risque avait
+été signalé avant de coder, il a été accepté, puis il s'est matérialisé sur le
+cas le plus prévisible. Le réglage par compte garde la protection disponible
+sans en faire un point de panne unique.
 
 **Ce qui a été mis en place pour que ce choix reste tenable :** sans clé d'API,
 hors production, le service écrit le contenu des courriels dans ses journaux au
@@ -149,49 +138,55 @@ production, ce repli est impossible** : le démarrage échoue sans clé, parce
 qu'un code d'authentification écrit dans des journaux n'est plus un secret.
 
 **Conséquence pour SRC :** une clé Brevo à configurer, un expéditeur à valider,
-et **deux migrations** à appliquer — sans lesquelles aucune connexion ne
-fonctionne.
+et **trois migrations** à appliquer (`verification_adresse_email`,
+`double_authentification`, `mfa_activable_par_compte`) : sans elles, aucune
+connexion ne fonctionne.
 
 ---
 
 ## 4. Contribution de chacun
 
-**49 commits** au total sur la semaine.
+**62 commits** au total sur la semaine.
 
 | Auteur | Commits | Domaine |
 |---|---|---|
-| Martin Simon | 37 | Backend intégral, chiffrement, tests, conteneurisation, documentation |
-| Jérémy Gross | 12 | Frontend, interface d'administration, partage multi-fichiers |
+| Martin Simon | 43 | Backend intégral, chiffrement, tests, conteneurisation, intégration continue, documentation |
+| Jérémy Gross | 14 | Frontend, interface d'administration, partage multi-fichiers |
+| Killian Duranti | 3 | Infrastructure |
+| Enzo Anselmo | 1 | Infrastructure |
+| Julien Dourlet | 1 | Infrastructure |
+
+*Le décompte des commits ne mesure pas la contribution : l'essentiel du travail
+d'infrastructure ne passe pas par ce dépôt. Les sections ci-dessous disent ce
+que chacun a décidé, mesuré ou corrigé.*
 
 
-### Martin Simon — IW, backend
+### Martin Simon : IW, backend
 
 Ce qui est vérifiable dans le dépôt :
 
-- **Chiffrement enveloppe** — une clé par fichier, elle-même chiffrée par la clé
+- **Chiffrement enveloppe**, une clé par fichier, elle-même chiffrée par la clé
   maître. Permet de **changer la clé maître sans relire un octet de fichier** :
   mesuré à **101 ms** sur le jeu de données complet.
-- **Authentification** — argon2id, session courte de 15 min, jeton de
+- **Authentification**, argon2id, session courte de 15 min, jeton de
   renouvellement opaque avec rotation et **détection de rejeu** : présenter deux
   fois le même jeton révoque toute la lignée.
 - **Chiffrement au repos** vérifié jusqu'aux octets : relevé hexadécimal du
   fichier sur le disque, relevé `psql` des colonnes chiffrées.
-- **Conteneurisation** — image multi-étapes, utilisateur non-root, système de
+- **Conteneurisation**, image multi-étapes, utilisateur non-root, système de
   fichiers en lecture seule, capacités noyau retirées. Auditée en la lançant.
-- **324 tests** (140 unitaires, 184 de bout en bout contre une vraie base
-  PostgreSQL et un vrai répertoire de stockage — pas des doubles).
+- **334 tests** (145 unitaires, 189 de bout en bout contre une vraie base
+  PostgreSQL et un vrai répertoire de stockage, pas des doubles), rejoués à
+  chaque fusion par l'intégration continue.
 
 **Une conséquence de mes choix sur l'infrastructure :** le quota mensuel compte
 les **dépôts**, pas le stockage occupé. C'est plus simple à comprendre pour
-l'utilisateur et plus simple à calculer — mais cela signifie que le disque se
+l'utilisateur et plus simple à calculer, mais cela signifie que le disque se
 remplit sans qu'aucun compteur ne s'en aperçoive. D'où la **conservation bornée**
 et la tâche de purge quotidienne, qui devient une charge d'exploitation pour
 SRC : un choix produit qui crée une obligation côté infrastructure.
 
-### Jérémy Gross — IW, frontend
-
-> *Description établie depuis l'historique git et le code.*
-> **Jérémy : relis et corrige, c'est toi qui devras l'expliquer.**
+### Jérémy Gross : IW, frontend
 
 - Interface complète : dépôt avec progression, liste des fichiers, page de
   téléchargement pour destinataire sans compte, panneau d'administration.
@@ -202,27 +197,27 @@ SRC : un choix produit qui crée une obligation côté infrastructure.
 
 **Ce que j'ai décidé, mesuré ou corrigé :**
 
-- **Prototype d'interface sans backend** — l'UI et ses animations
+- **Prototype d'interface sans backend**, l'UI et ses animations
   (`lib/file-transfer-engine.ts`) ont d'abord tourné sur un catalogue de
   fichiers fictif, pour avancer sur l'UX pendant que le backend se
   construisait. Une fois l'API prête, seule la couche de données a été
   remplacée par `lib/api.ts` ; l'animation, purement visuelle, est restée
   telle quelle.
-- **Table de jointure plutôt qu'un `fileId` unique sur `Share`** — pour que le
+- **Table de jointure plutôt qu'un `fileId` unique sur `Share`**, pour que le
   multi-fichiers tienne, une session de dépôt entière est désormais couverte
   par un modèle `ShareFile` (voir `schema.prisma`), avec un plafond volontaire
   de **50 fichiers par lien** : au-delà, un seul jeton devient
   disproportionnellement précieux à voler.
-- **Port et version Node figés** — frontend sur le port **3001** (le backend
+- **Port et version Node figés**, frontend sur le port **3001** (le backend
   occupe déjà 3000), backend épinglé sur **Node 24.9.0** exactement
   (`backend/.nvmrc`) et pas seulement « 24 » : c'est le patch minimal où Jest
   sait charger l'ESM de NestJS 12 (décision 2, §3).
-- **Le rôle n'est jamais porté par le jeton de session** — en écrivant le
+- **Le rôle n'est jamais porté par le jeton de session**, en écrivant le
   panneau admin, il fallait qu'un changement de rôle décidé par un
   administrateur soit visible tout de suite, pas seulement à la prochaine
   connexion (jusqu'à 15 minutes plus tard, décision 3). `GET /api/auth/me`
   relit donc le rôle en base à chaque appel, comme côté administration.
-- **Progression d'envoi mesurée, pas simulée** — l'upload passe par
+- **Progression d'envoi mesurée, pas simulée**, l'upload passe par
   `XMLHttpRequest` plutôt que `fetch`, seul moyen d'obtenir un évènement de
   progression réel sur les octets déjà envoyés.
 
@@ -231,35 +226,28 @@ SRC : un choix produit qui crée une obligation côté infrastructure.
 L'URL de l'API (`NEXT_PUBLIC_API_URL`) est inlinée dans le bundle Next.js **au
 moment de la construction** de l'image frontend (`frontend/Dockerfile`), pas
 lue au démarrage comme les variables du backend. Changer de domaine ou
-d'environnement impose donc de reconstruire l'image frontend — SRC ne peut pas
+d'environnement impose donc de reconstruire l'image frontend, SRC ne peut pas
 se contenter d'ajuster une variable au déploiement, il faut relancer le build.
 
 
 
-### Enzo ANSELMO — SRC
+### Enzo ANSELMO : SRC
 
 **Ce que j'ai décidé, mesuré ou corrigé :**
 
-* **Nom de domaine et DNS** — j'ai mis en place l'accès public au service via le domaine `filemoica.duckdns.org` et configuré les enregistrements DNS nécessaires pour faire pointer les différents services vers la machine de production.
+* **Nom de domaine et DNS**, j'ai mis en place l'accès public au service via le domaine `filemoica.duckdns.org` et configuré les enregistrements DNS nécessaires pour faire pointer les différents services vers la machine de production.
 
-* **Reverse proxy Caddy** — j'ai configuré Caddy comme point d'entrée public de l'infrastructure. Le routage par domaine et sous-domaines permet d'orienter les requêtes vers l'application principale, Grafana et les services protégés par le WAF, sans exposer directement leurs ports internes.
+* **Reverse proxy Caddy**, j'ai configuré Caddy comme point d'entrée public de l'infrastructure. Le routage par domaine et sous-domaines permet d'orienter les requêtes vers l'application principale, Grafana et les services protégés par le WAF, sans exposer directement leurs ports internes.
 
-* **HTTPS et gestion des certificats** — j'ai configuré la terminaison TLS au niveau de Caddy afin de sécuriser les accès en HTTPS. 
+* **HTTPS et gestion des certificats**, j'ai configuré la terminaison TLS au niveau de Caddy afin de sécuriser les accès en HTTPS. 
 
-* **Intégration du WAF** — j'ai intégré le pare-feu applicatif dans le chemin d'accès à l'application afin de filtrer les requêtes HTTP avant qu'elles n'atteignent les services applicatifs.
+* **Intégration du WAF**, j'ai intégré le pare-feu applicatif dans le chemin d'accès à l'application afin de filtrer les requêtes HTTP avant qu'elles n'atteignent les services applicatifs.
 
-* **Validation du routage** — j'ai vérifié la résolution DNS, l'accès HTTPS et le routage vers les différents services afin de confirmer que chaque domaine ou sous-domaine arrive bien sur le service attendu.
+* **Validation du routage**, j'ai vérifié la résolution DNS, l'accès HTTPS et le routage vers les différents services afin de confirmer que chaque domaine ou sous-domaine arrive bien sur le service attendu.
 
 **Une conséquence de mes choix sur l'application :**
 
 Le passage par Caddy et le WAF impose de coordonner la configuration réseau avec l'application. Le WAF doit autoriser les routes, méthodes HTTP et tailles de requêtes nécessaires aux transferts de fichiers, tandis que les en-têtes transmis par les reverse proxies doivent être correctement interprétés par le backend. La centralisation du HTTPS dans Caddy permet en revanche aux services internes de rester isolés du réseau public.
-
-
-**Une conséquence de mes choix sur l'application :**
-*À COMPLÉTER.* Par exemple : le choix d'une instance unique a écarté le stockage
-partagé côté backend, ou le nombre de relais devant le service détermine
-`TRUST_PROXY_HOPS`, sans lequel la limitation de tentatives bloque tout le monde
-d'un coup.
 
 ### Julien DOURLET, SRC
 
@@ -275,27 +263,27 @@ Une conséquence de mes choix sur l'application :
 
 Garantie de résilience et détection instantanée : L'application dispose d'un plan de reprise d'activité (DRP) formellement éprouvé qui élimine tout risque de perte définitive de données. En cas de panne critique ou de corruption, l'équipe est alertée immédiatement sur Discord/Telegram et la remise en service complète s'effectue en quelques commandes sans altérer l'expérience utilisateur globale.
 
-### Killian DURANTI MACIA — SRC
+### Killian DURANTI MACIA : SRC
 
 **Ce que j'ai décidé, mesuré ou corrigé :**
 
-* **Prise en charge de la machine de déploiement** — j'ai préparé et administré la VM Ubuntu utilisée pour héberger le projet : installation de Docker et Docker Compose, organisation des répertoires de déploiement dans `/opt`, gestion des services système et préparation de l'environnement nécessaire à l'exécution de la pile complète.
+* **Prise en charge de la machine de déploiement**, j'ai préparé et administré la VM Ubuntu utilisée pour héberger le projet : installation de Docker et Docker Compose, organisation des répertoires de déploiement dans `/opt`, gestion des services système et préparation de l'environnement nécessaire à l'exécution de la pile complète.
 
-* **Déploiement et intégration du projet des développeurs** — j'ai récupéré les versions successives du frontend Next.js et du backend NestJS, intégré leur code dans l'infrastructure, construit leurs images Docker multi-étapes et assuré les mises à jour par reconstruction des images sans supprimer les volumes persistants. J'ai également pris en compte les migrations Prisma lors des redéploiements.
+* **Déploiement et intégration du projet des développeurs**, j'ai récupéré les versions successives du frontend Next.js et du backend NestJS, intégré leur code dans l'infrastructure, construit leurs images Docker multi-étapes et assuré les mises à jour par reconstruction des images sans supprimer les volumes persistants. J'ai également pris en compte les migrations Prisma lors des redéploiements.
 
-* **Architecture de reverse proxy à deux niveaux** — j'ai conservé Caddy directement sur la machine comme point d'entrée public et gestionnaire HTTPS, puis ajouté Nginx dans Docker comme reverse proxy interne. Caddy reçoit les connexions sur le domaine `filemoica.duckdns.org` et transmet uniquement vers Nginx sur `127.0.0.1:8080`. Nginx distribue ensuite les requêtes vers le frontend sur le port `3001` ou le backend sur le port `3000`.
+* **Architecture de reverse proxy à deux niveaux**, j'ai conservé Caddy directement sur la machine comme point d'entrée public et gestionnaire HTTPS, puis ajouté Nginx dans Docker comme reverse proxy interne. Caddy reçoit les connexions sur le domaine `filemoica.duckdns.org` et transmet uniquement vers Nginx sur `127.0.0.1:8080`. Nginx distribue ensuite les requêtes vers le frontend sur le port `3001` ou le backend sur le port `3000`.
 
-* **Isolation réseau des services** — PostgreSQL, le backend, le frontend et Vault ne sont pas publiés directement sur Internet. PostgreSQL utilise un réseau Docker interne dédié et Vault un réseau privé séparé. Le port de Nginx est lié uniquement à `127.0.0.1`, de sorte que le seul véritable point d'entrée public reste Caddy.
+* **Isolation réseau des services**, PostgreSQL, le backend, le frontend et Vault ne sont pas publiés directement sur Internet. PostgreSQL utilise un réseau Docker interne dédié et Vault un réseau privé séparé. Le port de Nginx est lié uniquement à `127.0.0.1`, de sorte que le seul véritable point d'entrée public reste Caddy.
 
-* **Gestion du pare-feu et de l'exposition réseau** — j'ai configuré la machine afin de limiter l'accès extérieur aux services nécessaires au fonctionnement du site, principalement HTTP/HTTPS, tout en laissant PostgreSQL, Vault et les ports applicatifs accessibles uniquement depuis la machine ou les réseaux Docker concernés. Cette organisation évite d'exposer directement les composants internes de l'application.
+* **Gestion du pare-feu et de l'exposition réseau**, j'ai configuré la machine afin de limiter l'accès extérieur aux services nécessaires au fonctionnement du site, principalement HTTP/HTTPS, tout en laissant PostgreSQL, Vault et les ports applicatifs accessibles uniquement depuis la machine ou les réseaux Docker concernés. Cette organisation évite d'exposer directement les composants internes de l'application.
 
-* **Intégration de HashiCorp Vault** — j'ai ajouté Vault à la pile Docker afin de centraliser les secrets applicatifs tels que `JWT_SECRET`, `ENCRYPTION_KEY_V1` et `HMAC_INDEX_KEY`. Une première intégration avec stockage Raft, initialisation et mécanisme d'unseal a été mise en place et testée. Pour l'environnement de démonstration, j'ai ensuite simplifié le fonctionnement avec un Vault en mode développement et un service d'initialisation automatique, afin que le déploiement reste reproductible sans intervention manuelle à chaque redémarrage.
+* **Intégration de HashiCorp Vault**, j'ai ajouté Vault à la pile Docker afin de centraliser les secrets applicatifs tels que `JWT_SECRET`, `ENCRYPTION_KEY_V1` et `HMAC_INDEX_KEY`. Une première intégration avec stockage Raft, initialisation et mécanisme d'unseal a été mise en place et testée. Pour l'environnement de démonstration, j'ai ensuite simplifié le fonctionnement avec un Vault en mode développement et un service d'initialisation automatique, afin que le déploiement reste reproductible sans intervention manuelle à chaque redémarrage.
 
-* **Diagnostic et correction des problèmes de déploiement** — plusieurs défauts n'apparaissaient qu'une fois la pile réellement exécutée : changement du chemin de volume de PostgreSQL 18, double chargement de la configuration Vault provoquant un conflit sur le port `8200`, erreur de configuration Nginx, résolution DNS des services uniquement disponible depuis le réseau Docker, et configuration Caddy invalide provoquant une erreur HTTP 502. Ces problèmes ont été reproduits avec les logs Docker, `curl`, les healthchecks et les outils de validation de configuration avant correction.
+* **Diagnostic et correction des problèmes de déploiement**, plusieurs défauts n'apparaissaient qu'une fois la pile réellement exécutée : changement du chemin de volume de PostgreSQL 18, double chargement de la configuration Vault provoquant un conflit sur le port `8200`, erreur de configuration Nginx, résolution DNS des services uniquement disponible depuis le réseau Docker, et configuration Caddy invalide provoquant une erreur HTTP 502. Ces problèmes ont été reproduits avec les logs Docker, `curl`, les healthchecks et les outils de validation de configuration avant correction.
 
-* **Persistance et redéploiement** — PostgreSQL et le stockage des fichiers utilisent des volumes Docker persistants. La pile peut ainsi être reconstruite avec `docker compose up -d --build` sans supprimer les données. Les volumes ne sont détruits que volontairement lors d'une remise à zéro de l'environnement.
+* **Persistance et redéploiement**, PostgreSQL et le stockage des fichiers utilisent des volumes Docker persistants. La pile peut ainsi être reconstruite avec `docker compose up -d --build` sans supprimer les données. Les volumes ne sont détruits que volontairement lors d'une remise à zéro de l'environnement.
 
-* **Validation du fonctionnement réel** — après intégration, j'ai vérifié séparément chaque niveau de la chaîne : PostgreSQL en état `healthy`, Vault en état `healthy`, backend et frontend en état `healthy`, accès au frontend via Nginx sur `127.0.0.1:8080`, endpoint `/health` du backend, puis accès final en HTTPS par `filemoica.duckdns.org`.
+* **Validation du fonctionnement réel**, après intégration, j'ai vérifié séparément chaque niveau de la chaîne : PostgreSQL en état `healthy`, Vault en état `healthy`, backend et frontend en état `healthy`, accès au frontend via Nginx sur `127.0.0.1:8080`, endpoint `/health` du backend, puis accès final en HTTPS par `filemoica.duckdns.org`.
 
 **Une conséquence de mes choix sur l'application :**
 
@@ -332,7 +320,7 @@ n'auraient montrés séparément :**
 
 Le travail à deux a fait remonter des problèmes qu'aucun test ne couvrait :
 
-- Après avoir révoqué un lien, **le fichier devenait impartageable** — la seule
+- Après avoir révoqué un lien, **le fichier devenait impartageable**, la seule
   action restante était de le supprimer. Signalé par Martin en testant.
 - Les fichiers supprimés côté serveur **restaient affichés** faute de
   rafraîchissement.
@@ -341,8 +329,8 @@ Le travail à deux a fait remonter des problèmes qu'aucun test ne couvrait :
 
 ### Le défaut qui empêchait purement et simplement de se connecter
 
-`FRONTEND_ORIGIN` valait `http://localhost:5173` — le port de Vite, reste d'un
-cadrage antérieur — alors que Next.js écoute sur **3001**.
+`FRONTEND_ORIGIN` valait `http://localhost:5173`, le port de Vite, reste d'un
+cadrage antérieur, alors que Next.js écoute sur **3001**.
 
 Le symptôme était trompeur : **le serveur acceptait la connexion et posait les
 cookies**, mais le navigateur rejetait la réponse entière pour origine non
@@ -360,8 +348,8 @@ décrit ce qui a été vérifié, et ce qui s'est révélé faux.
 ### Le principe de travail retenu
 
 Aucune affirmation n'a été acceptée sans exécution. Chaque lot s'est terminé par
-la même séquence — `npm test`, `npm run test:e2e`, `npm run lint`,
-`tsc --noEmit`, `npm run build` — et les manipulations sensibles ont été jouées
+la même séquence, `npm test`, `npm run test:e2e`, `npm run lint`,
+`tsc --noEmit`, `npm run build`, et les manipulations sensibles ont été jouées
 en réel, pas décrites.
 
 ### Ce qui a été vérifié avant d'écrire
@@ -369,7 +357,7 @@ en réel, pas décrites.
 | Hypothèse | Vérification | Résultat |
 |---|---|---|
 | Alpine convient malgré les dépendances natives | Inspection des paquets publiés par `@node-rs/argon2` | ✅ un binaire musl existe |
-| Le client Prisma n'a pas de moteur natif | Recherche de `.node` dans le client généré | ✅ aucun — le piège habituel d'Alpine est écarté |
+| Le client Prisma n'a pas de moteur natif | Recherche de `.node` dans le client généré | ✅ aucun, le piège habituel d'Alpine est écarté |
 | La CLI Prisma trouve un fichier de configuration au nom non standard | `npx prisma validate` | ✅ `Loaded Prisma config from prisma7.config.ts` |
 
 ### Ce que l'IA a affirmé à tort, et comment ça a été rattrapé
@@ -383,7 +371,7 @@ identifiée : un compte PostgreSQL sans droits DDL.
 
 **Une procédure documentée qui ne fonctionnait pas.** La procédure de
 restauration, écrite mais jamais jouée, a échoué au premier essai :
-**42 erreurs**, et un résultat plus dangereux qu'un échec franc —
+**42 erreurs**, et un résultat plus dangereux qu'un échec franc ,
 `users=1 files=0 shares=0`, une base qui *paraît* restaurée. Deux causes : les
 migrations recréaient le schéma avant la restauration, et `psql` poursuit après
 chaque erreur par défaut. Corrigé, rejoué, **0 erreur**.
@@ -406,7 +394,7 @@ lancement.
 
 **Un bug que les tests ne voyaient pas.** Les fichiers déposés faisaient
 **0 octet** : mettre le flux en mode « flowing » avant de le brancher perdait
-les données. Les tests passaient quand même — l'assertion vérifiait que le
+les données. Les tests passaient quand même, l'assertion vérifiait que le
 contenu n'était *pas* lisible en clair, ce qu'un fichier vide satisfait. Des
 tests d'aller-retour et d'altération ont été ajoutés.
 
@@ -427,7 +415,7 @@ un fonctionnement jamais essayé**. Ces erreurs-là ne se voient pas à la
 relecture : elles ne se voient qu'en exécutant.
 
 Le tri ne s'est pas fait sur la qualité apparente du code, mais sur la
-**vérification** — construire l'image, la lancer, auditer ce qu'elle contient,
+**vérification**, construire l'image, la lancer, auditer ce qu'elle contient,
 détruire la base et la restaurer, compter les octets.
 
 ---
@@ -439,7 +427,7 @@ détruire la base et la restaurer, compter les octets.
 | Module de paiement | Hors périmètre assumé. L'offre payante se bascule en base |
 | Stockage objet (S3/MinIO) | Évalué et écarté : inutile à une seule instance |
 | Plusieurs instances | Le compteur de limitation de tentatives est en mémoire ; à revoir si cela change |
-| Annulation d'un téléchargement | Le lien se consume à **l'envoi** du fichier. Ce que le navigateur en fait ensuite échappe au serveur — c'est vrai de tous les services de ce type |
+| Annulation d'un téléchargement | Le lien se consume à **l'envoi** du fichier. Ce que le navigateur en fait ensuite échappe au serveur : c'est vrai de tous les services de ce type |
 | Révocation **instantanée** d'une session | Les jetons d'accès sont autoportants : couper une session prend jusqu'à 15 minutes. Le retrait de rôle, lui, est immédiat |
 
 ---
@@ -449,7 +437,7 @@ détruire la base et la restaurer, compter les octets.
 | | |
 |---|---|
 | Commits | 49 |
-| Tests | **324** (140 unitaires · 184 bout en bout) |
+| Tests | **334** (145 unitaires · 189 bout en bout) |
 | Migrations | 9 |
 | Rotation de clé maître | **101 ms**, sans interruption |
 | Restauration complète | **~50 s**, contenu **identique au bit près** |
