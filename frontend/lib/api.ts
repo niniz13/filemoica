@@ -13,6 +13,17 @@ export class ApiError extends Error {
 
 export type UserRole = "USER" | "ADMIN";
 
+/**
+ * Ce que rend la première étape de connexion.
+ *
+ * `challengeId` n'est pas un secret : le secret, c'est le code à six chiffres
+ * envoyé par courriel. Il désigne simplement la tentative en cours.
+ */
+export interface MfaChallenge {
+  mfaRequired: true;
+  challengeId: string;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -40,7 +51,11 @@ export interface FileItem {
   createdAt: string;
 }
 
-export type ShareStatus = "ACTIVE" | "EXPIRED" | "REVOKED";
+/**
+ * `CONSUMED` est l'état d'un lien à usage unique dont tous les fichiers ont été
+ * téléchargés. Distinct de `REVOKED` : personne ne l'a coupé, il a servi.
+ */
+export type ShareStatus = "ACTIVE" | "EXPIRED" | "REVOKED" | "CONSUMED";
 
 export interface SharedFile {
   id: string;
@@ -53,9 +68,12 @@ export interface Share {
   files: SharedFile[];
   recipientEmail?: string;
   protectedByPassword: boolean;
+  singleUse: boolean;
   status: ShareStatus;
   expiresAt: string;
   createdAt: string;
+  // Pas de `token` : le serveur n'en garde que l'empreinte. Un lien ne se
+  // réaffiche jamais après sa création — il faut en créer un nouveau.
 }
 
 export interface CreatedShare extends Share {
@@ -64,6 +82,11 @@ export interface CreatedShare extends Share {
 
 export interface ShareInfo {
   requiresPassword: boolean;
+  /**
+   * Le lien se consume-t-il ? Le serveur le renvoie, il faut s'en servir :
+   * sans cette information, on propose un « Retélécharger » qui échouera.
+   */
+  singleUse: boolean;
   expiresAt: string;
   files?: SharedFile[];
 }
@@ -73,6 +96,14 @@ export interface CreateShareInput {
   expiresInHours?: number;
   password?: string;
   recipientEmail?: string;
+  /**
+   * Le lien se consume-t-il après usage ?
+   *
+   * Côté serveur, la consommation intervient au **dernier** fichier téléchargé,
+   * pas au premier : un destinataire qui reçoit trois documents doit pouvoir
+   * les récupérer tous. Les fichiers sont ensuite effacés du serveur.
+   */
+  burnAfterDownload?: boolean;
 }
 
 export interface ManagedUser {
@@ -245,9 +276,37 @@ async function downloadShare(
 export const api = {
   register: (email: string, password: string) =>
     request<User>("/api/auth/register", { method: "POST", body: { email, password } }),
+  /**
+   * Première étape : vérifie les identifiants et déclenche l'envoi du code.
+   *
+   * **N'ouvre aucune session.** Elle rend un défi à relever sur `verifyMfa`.
+   */
   login: (email: string, password: string) =>
-    request<User>("/api/auth/login", { method: "POST", body: { email, password } }),
+    request<MfaChallenge>("/api/auth/login", {
+      method: "POST",
+      body: { email, password },
+    }),
+  /** Seconde étape : échange le code reçu par courriel contre une session. */
+  verifyMfa: (challengeId: string, code: string) =>
+    request<User>("/api/auth/mfa/verify", {
+      method: "POST",
+      body: { challengeId, code },
+    }),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
+  /** Confirme une adresse à partir du jeton reçu par courriel. */
+  verifyEmail: (token: string) =>
+    request<void>("/api/auth/verify-email", { method: "POST", body: { token } }),
+  /**
+   * Redemande un lien de confirmation.
+   *
+   * Répond toujours `204`, même pour une adresse inconnue : le serveur refuse
+   * de dire qui est inscrit. L'appelant ne peut donc rien conclure du succès.
+   */
+  resendVerification: (email: string) =>
+    request<void>("/api/auth/resend-verification", {
+      method: "POST",
+      body: { email },
+    }),
   me: () => request<CurrentUser>("/api/auth/me"),
   quota: () => request<Quota>("/api/files/quota"),
   listFiles: () => request<FileItem[]>("/api/files"),

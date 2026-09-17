@@ -47,16 +47,62 @@ incomplet.
 
 ### Le script de vérification, à lancer après chaque déploiement
 
-Il joue un **parcours complet** contre le service en ligne : création de compte,
-dépôt d'un fichier, création d'un lien, téléchargement **sans compte**, puis
-comparaison octet par octet avec l'original. Il nettoie derrière lui et sort en
-code 0 ou 1 — utilisable tel quel dans un déploiement automatisé.
+Il vérifie **ce qui casse réellement à un déploiement** : la sonde et l'accès à
+la base, la protection CSRF, le refus des routes protégées sans session, et le
+fait que la connexion exige bien une adresse confirmée. Sort en code 0 ou 1 —
+utilisable tel quel dans un déploiement automatisé.
 
-C'est ce qui distingue « le conteneur répond » de « le service fonctionne ». Un
-conteneur peut très bien être `healthy` avec un volume non inscriptible : la
-sonde passe, et le premier dépôt échoue.
+Il teste donc des **refus**, pas un chemin heureux : c'est ce qui distingue « le
+conteneur répond » de « les contrôles sont en place ».
 
-> Résultat du 16/09 sur la pile complète : **15 vérifications, 0 échec.**
+> ⚠️ **Il ne peut plus jouer le parcours complet.** Depuis la double
+> authentification, ouvrir une session exige de relever un code à six chiffres
+> dans une boîte aux lettres — hors de portée d'un script. Le dépôt, le lien et
+> le téléchargement sont couverts par la suite end-to-end, qui dispose de la
+> base.
+>
+> La vérification qui reste à votre main est la dernière case de l'aide-mémoire :
+> **inscrire un compte de test et aller jusqu'au code reçu**. C'est la seule
+> preuve que la chaîne d'envoi fonctionne en production.
+
+> Résultat du 16/09 : **13 vérifications, 0 échec.**
+
+---
+
+## 🔴 Nouveau depuis la dernière version — à ne pas manquer
+
+Le service envoie désormais des courriels, et **la connexion en dépend**.
+
+### Deux migrations à appliquer
+
+`verification_adresse_email` et `double_authentification`. `npm run db:deploy`
+s'en charge, mais **sur la base déjà en service, aucune connexion ne
+fonctionnera tant qu'elles ne sont pas passées** — les tables
+`email_verifications` et `mfa_challenges` n'existeraient pas.
+
+### Une clé d'API Brevo à configurer
+
+| Ce qui a changé | Conséquence |
+|---|---|
+| L'adresse doit être confirmée par courriel | Un compte non confirmé **ne peut pas se connecter** |
+| Un code à six chiffres est envoyé à chaque connexion | Sans courriel, **personne ne se connecte** |
+
+**`BREVO_API_KEY` vous est transmise séparément par l'équipe IW** — pas par le
+dépôt, pas par la messagerie d'équipe. Elle permet d'envoyer des courriels en
+votre nom : traitez-la comme un mot de passe.
+
+**Le service refuse de démarrer sans elle en production**, volontairement : sans
+clé, il se replierait sur l'écriture des codes dans les journaux, où ils ne
+seraient plus des secrets.
+
+Trois variables l'accompagnent : `MAIL_FROM_ADDRESS` (une adresse **validée dans
+Brevo**, sinon tous les envois sont refusés), `MAIL_FROM_NAME`, et
+`APP_PUBLIC_URL` qui construit les liens de confirmation.
+
+Le détail est dans
+[configuration-deploiement.md](configuration-deploiement.md#2-envoi-de-courriels--brevo).
+
+> **Votre réponse — clé reçue et expéditeur validé ?** …
 
 ---
 
@@ -262,14 +308,16 @@ quelques gigaoctets suffisent largement.
 
 | # | Point | Urgence |
 |---|---|---|
-| 1 | Volume monté, appartenant à l'uid 1000 | 🔴 Avant le déploiement |
-| 2 | Secrets générés, stockés **hors des sauvegardes** | 🔴 Avant le déploiement |
-| 3 | Sauvegardes planifiées — **les deux artefacts** | 🔴 Avant le déploiement |
-| 4 | HTTPS en place | 🔴 Sinon la connexion ne fonctionne pas |
-| 5 | Valeur de `TRUST_PROXY_HOPS` | 🟡 Avant le déploiement |
-| 6 | Les deux purges planifiées | 🟡 Avant le déploiement |
-| 7 | Compte PostgreSQL sans droits DDL pour l'application | 🟢 Si le temps le permet |
-| 8 | Espace alloué au volume | 🟢 À arbitrer |
+| 1 | **`BREVO_API_KEY` configurée et expéditeur validé** — sans quoi personne ne se connecte | 🔴 **Nouveau** |
+| 2 | **Les deux migrations appliquées** (`verification_adresse_email`, `double_authentification`) | 🔴 **Nouveau** |
+| 3 | Volume monté, appartenant à l'uid 1000 | 🔴 Avant le déploiement |
+| 4 | Secrets générés, stockés **hors des sauvegardes** | 🔴 Avant le déploiement |
+| 5 | Sauvegardes planifiées — **les deux artefacts** | 🔴 Avant le déploiement |
+| 6 | HTTPS en place | 🔴 Sinon la connexion ne fonctionne pas |
+| 7 | Valeur de `TRUST_PROXY_HOPS` | 🟡 Avant le déploiement |
+| 8 | Les deux purges planifiées | 🟡 Avant le déploiement |
+| 9 | Compte PostgreSQL sans droits DDL pour l'application | 🟢 Si le temps le permet |
+| 10 | Espace alloué au volume | 🟢 À arbitrer |
 
 *Ce qui figurait ici et n'y est plus : le Dockerfile (écrit et vérifié), la
 politique de conservation (tranchée — 30 jours en gratuit, 90 en payant) et le

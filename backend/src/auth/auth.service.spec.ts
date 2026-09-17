@@ -1,7 +1,9 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthService } from './auth.service';
+import { EmailVerificationService } from './email-verification.service';
+import { MfaService } from './mfa.service';
 import { PasswordService } from './password.service';
 import { TokenService } from './token.service';
 
@@ -12,12 +14,16 @@ describe('AuthService', () => {
   let verify: jest.Mock;
   let verifyDummy: jest.Mock;
   let openSession: jest.Mock;
+  let emettre: jest.Mock;
+  let verifier: jest.Mock;
 
   beforeEach(async () => {
     findUnique = jest.fn();
     create = jest.fn();
     verify = jest.fn();
     verifyDummy = jest.fn().mockResolvedValue(false);
+    emettre = jest.fn().mockResolvedValue({ challengeId: 'defi-1' });
+    verifier = jest.fn();
     openSession = jest.fn().mockResolvedValue({
       accessToken: 'access',
       refreshToken: 'refresh',
@@ -40,6 +46,13 @@ describe('AuthService', () => {
           },
         },
         { provide: TokenService, useValue: { openSession } },
+      {
+        // L'envoi du lien de confirmation est hors sujet ici : ces tests
+        // portent sur les identifiants, pas sur le courriel.
+        provide: EmailVerificationService,
+        useValue: { envoyerLien: jest.fn() },
+      },
+      { provide: MfaService, useValue: { emettre, verifier } },
       ],
     }).compile();
 
@@ -97,19 +110,23 @@ describe('AuthService', () => {
   });
 
   describe('Connexion', () => {
-    it('ouvre une session quand les identifiants sont bons', async () => {
+    // Le cœur du second facteur : de bons identifiants ne suffisent plus.
+    it('émet un défi au lieu d\'ouvrir une session', async () => {
       findUnique.mockResolvedValue({
         id: 'user-1',
         email: 'alice@example.fr',
         role: 'USER',
         passwordHash: '$argon2id$empreinte',
+        emailVerifiedAt: new Date(),
       });
       verify.mockResolvedValue(true);
 
       const result = await auth.login('alice@example.fr', 'phrase-longue-ok');
 
-      expect(result?.user.id).toBe('user-1');
-      expect(result?.accessToken).toBe('access');
+      expect(result).toEqual({ challengeId: 'defi-1' });
+      expect(emettre).toHaveBeenCalledWith('user-1', 'alice@example.fr');
+      // Aucune session tant que le code n'est pas donné.
+      expect(openSession).not.toHaveBeenCalled();
     });
 
     it('refuse un mot de passe incorrect', async () => {
@@ -142,7 +159,27 @@ describe('AuthService', () => {
       expect(verifyDummy).toHaveBeenCalled();
     });
 
-    it('ne renvoie jamais l\'empreinte du mot de passe', async () => {
+    // Le contrôle vient **après** la vérification du mot de passe : sinon, un
+    // inconnu apprendrait quels comptes existent en lisant le code d'erreur.
+    it('refuse une adresse non confirmée, malgré un mot de passe valide', async () => {
+      findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'alice@example.fr',
+        role: 'USER',
+        passwordHash: '$argon2id$empreinte',
+        emailVerifiedAt: null,
+      });
+      verify.mockResolvedValue(true);
+
+      await expect(
+        auth.login('alice@example.fr', 'phrase-longue-ok'),
+      ).rejects.toThrow(ForbiddenException);
+      expect(openSession).not.toHaveBeenCalled();
+    });
+
+    // Une valeur absente ne doit pas ouvrir la porte : un contrôle de sécurité
+    // qui laisse passer quand la donnée manque finira par laisser passer.
+    it('refuse aussi quand la date de confirmation est absente', async () => {
       findUnique.mockResolvedValue({
         id: 'user-1',
         email: 'alice@example.fr',
@@ -151,7 +188,58 @@ describe('AuthService', () => {
       });
       verify.mockResolvedValue(true);
 
-      const result = await auth.login('alice@example.fr', 'phrase-longue-ok');
+      await expect(
+        auth.login('alice@example.fr', 'phrase-longue-ok'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('n\'émet aucun défi quand le mot de passe est faux', async () => {
+      findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'alice@example.fr',
+        role: 'USER',
+        passwordHash: '$argon2id$empreinte',
+        emailVerifiedAt: new Date(),
+      });
+      verify.mockResolvedValue(false);
+
+      await auth.login('alice@example.fr', 'mauvais');
+
+      expect(emettre).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Second facteur', () => {
+    it('ouvre la session quand le code est bon', async () => {
+      verifier.mockResolvedValue('user-1');
+      findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'alice@example.fr',
+        role: 'USER',
+      });
+
+      const result = await auth.ouvrirSessionApresMfa('defi-1', '123456');
+
+      expect(result?.user.id).toBe('user-1');
+      expect(result?.accessToken).toBe('access');
+    });
+
+    it('refuse un code invalide', async () => {
+      verifier.mockResolvedValue(null);
+
+      expect(await auth.ouvrirSessionApresMfa('defi-1', '000000')).toBeNull();
+      expect(openSession).not.toHaveBeenCalled();
+    });
+
+    it('ne renvoie jamais l\'empreinte du mot de passe', async () => {
+      verifier.mockResolvedValue('user-1');
+      findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'alice@example.fr',
+        role: 'USER',
+      });
+
+      const result = await auth.ouvrirSessionApresMfa('defi-1', '123456');
 
       expect(JSON.stringify(result?.user)).not.toContain('argon2');
     });

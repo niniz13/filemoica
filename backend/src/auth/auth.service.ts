@@ -1,5 +1,12 @@
-import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { EmailVerificationService } from './email-verification.service';
+import { MfaService, type DefiEmis } from './mfa.service';
 import { PasswordService } from './password.service';
 import { IssuedTokens, TokenService } from './token.service';
 
@@ -24,6 +31,8 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
+    private readonly verification: EmailVerificationService,
+    private readonly mfa: MfaService,
   ) {}
 
   /**
@@ -58,6 +67,19 @@ export class AuthService {
       select: { id: true, email: true, role: true },
     });
 
+    // Le compte existe, mais il reste inutilisable tant que l'adresse n'est pas
+    // confirmée : la connexion est refusée. Un échec d'envoi ne doit pas pour
+    // autant annuler l'inscription — le compte est créé, et un nouveau lien
+    // peut être redemandé.
+    try {
+      await this.verification.envoyerLien(user.id, user.email);
+    } catch (error) {
+      this.logger.error(
+        `Inscription ${user.id} : le courriel de confirmation n'est pas parti`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+
     this.logger.log(`Compte créé : ${user.id}`);
 
     return user;
@@ -72,10 +94,16 @@ export class AuthService {
   async login(
     email: string,
     password: string,
-  ): Promise<(IssuedTokens & { user: PublicUser }) | null> {
+  ): Promise<DefiEmis | null> {
     const user = await this.prisma.user.findUnique({
       where: { email: this.normalizeEmail(email) },
-      select: { id: true, email: true, role: true, passwordHash: true },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        passwordHash: true,
+        emailVerifiedAt: true,
+      },
     });
 
     if (!user) {
@@ -93,12 +121,56 @@ export class AuthService {
       return null;
     }
 
+    // Contrôlé **après** le mot de passe, et jamais avant : répondre « adresse
+    // non confirmée » à qui n'a pas les identifiants transformerait la
+    // connexion en oracle révélant quels comptes existent.
+    // `!` et non `=== null` : une valeur absente doit refuser la connexion, pas
+    // la laisser passer. Un contrôle de sécurité qui s'ouvre quand la donnée
+    // manque est un contrôle qui finira par s'ouvrir.
+    if (!user.emailVerifiedAt) {
+      this.logger.warn(`Connexion refusée : adresse non confirmée (${user.id})`);
+
+      throw new ForbiddenException({
+        error: 'EMAIL_NOT_VERIFIED',
+        message:
+          'Confirmez votre adresse avant de vous connecter. Vérifiez votre boîte de réception.',
+      });
+    }
+
+    // Les identifiants sont bons, mais ils ne suffisent plus : la session
+    // n'est ouverte qu'après le second facteur. C'est tout l'intérêt — un mot
+    // de passe volé ne donne plus accès au compte à lui seul.
+    return this.mfa.emettre(user.id, user.email);
+  }
+
+  /**
+   * Ouvre la session une fois le second facteur validé.
+   *
+   * Séparé de {@link login} : les identifiants ont déjà été vérifiés à l'étape
+   * précédente, c'est le défi qui fait autorité ici.
+   */
+  async ouvrirSessionApresMfa(
+    challengeId: string,
+    code: string,
+  ): Promise<(IssuedTokens & { user: PublicUser }) | null> {
+    const userId = await this.mfa.verifier(challengeId, code);
+
+    if (!userId) {
+      return null;
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, role: true },
+    });
+
+    if (!user) {
+      return null;
+    }
+
     const tokens = await this.tokens.openSession(user);
 
-    return {
-      ...tokens,
-      user: { id: user.id, email: user.email, role: user.role },
-    };
+    return { ...tokens, user };
   }
 
   /**

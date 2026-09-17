@@ -64,6 +64,9 @@ model User {
   /// Empreinte argon2id. Le mot de passe lui-même n'existe nulle part.
   passwordHash String @map("password_hash")
 
+  /// Date de confirmation de l'adresse. Nulle tant qu'elle ne l'est pas :
+  /// la connexion est alors refusée.
+  emailVerifiedAt DateTime? @map("email_verified_at")
   role      Role     @default(USER)
   plan      Plan     @default(FREE)
   createdAt DateTime @default(now()) @map("created_at")
@@ -71,6 +74,8 @@ model User {
   files         File[]
   shares        Share[]
   refreshTokens RefreshToken[]
+  emailVerifications EmailVerification[]
+  mfaChallenges      MfaChallenge[]
   monthlyUsage  MonthlyUsage[]
 
   @@map("users")
@@ -279,4 +284,56 @@ model RevokedAccessToken {
 
   @@index([expiresAt])
   @@map("revoked_access_tokens")
+}
+
+/// Jeton de confirmation d'adresse, envoyé par courriel à l'inscription.
+///
+/// Même principe que les autres jetons du service : seule l'empreinte est
+/// stockée. Une fuite de la base ne permet pas de confirmer une adresse à la
+/// place de son propriétaire.
+model EmailVerification {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// SHA-256 du jeton envoyé dans le lien.
+  tokenHash String @unique @map("token_hash")
+
+  expiresAt  DateTime  @map("expires_at")
+  /// Rempli à la première utilisation : un lien de confirmation ne sert qu'une fois.
+  consumedAt DateTime? @map("consumed_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("email_verifications")
+}
+
+/// Défi de double authentification, émis à chaque connexion.
+///
+/// Le code à six chiffres n'est jamais stocké en clair : on garde son empreinte
+/// argon2id, comme pour un mot de passe. Un code à six chiffres se casse en
+/// quelques millisecondes avec SHA-256 ; argon2id rend l'essai coûteux même si
+/// la base fuit pendant la fenêtre de validité.
+model MfaChallenge {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Empreinte argon2id du code envoyé par courriel.
+  codeHash String @map("code_hash")
+
+  /// Nombre d'essais infructueux. Au-delà d'une poignée, le défi est clos :
+  /// c'est ce qui rend l'énumération des 10^6 codes inutile.
+  attempts Int @default(0)
+
+  expiresAt  DateTime  @map("expires_at")
+  consumedAt DateTime? @map("consumed_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("mfa_challenges")
 }

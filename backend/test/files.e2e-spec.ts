@@ -8,7 +8,7 @@ import { AppModule } from './../src/app.module';
 import { configureApp } from './../src/app.setup';
 import { CryptoService } from './../src/crypto/crypto.service';
 import { PrismaService } from './../src/prisma/prisma.service';
-import { resetDatabase } from './database';
+import { confirmerAdresse, ouvrirSession, resetDatabase } from './database';
 
 const PASSWORD = 'phrase-de-passe-suffisamment-longue';
 const CONTENU = 'Rapport confidentiel — chiffre annuel : 1 234 567 euros.';
@@ -58,13 +58,10 @@ describe('Fichiers (e2e)', () => {
       .send({ email, password: PASSWORD })
       .expect(201);
 
-    const response = await request(app.getHttpServer())
-      .post('/api/auth/login')
-      .set(...CSRF)
-      .send({ email, password: PASSWORD })
-      .expect(200);
+      // La connexion est refusée tant que l'adresse n'est pas confirmée.
+      await confirmerAdresse(prisma, email);
 
-    return response.get('Set-Cookie') ?? [];
+    return ouvrirSession(app, prisma, email, PASSWORD);
   }
 
   /**

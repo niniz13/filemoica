@@ -1,4 +1,4 @@
-﻿# filemoica — Backend
+# filemoica — Backend
 
 API de partage de fichiers chiffrés. Un utilisateur dépose un fichier et en tire
 un lien à durée limitée, éventuellement protégé par un mot de passe, qu'il peut
@@ -204,7 +204,7 @@ npx tsc --noEmit         # vérification de types
 | Conservation et purge automatique des fichiers | ✅ implémenté et testé |
 | Conteneurisation (image non-root, durcie) | ✅ construite, lancée et auditée |
 
-**296 tests au vert** (128 unitaires, 168 end-to-end), analyse statique et
+**324 tests au vert** (140 unitaires, 184 end-to-end), analyse statique et
 vérification de types sans erreur.
 
 **Le parcours utilisateur est complet** : déposer, partager, télécharger,

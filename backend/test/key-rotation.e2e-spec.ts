@@ -10,7 +10,7 @@ import { configureApp } from './../src/app.setup';
 import { CryptoService } from './../src/crypto/crypto.service';
 import { KeyRotationService } from './../src/crypto/key-rotation.service';
 import { PrismaService } from './../src/prisma/prisma.service';
-import { resetDatabase } from './database';
+import { confirmerAdresse, ouvrirSession, resetDatabase } from './database';
 
 const PASSWORD = 'phrase-de-passe-suffisamment-longue';
 const CONTENU = 'Document dont le chiffrement doit survivre � la rotation.';
@@ -79,13 +79,10 @@ describe('Rotation des cl�s (e2e)', () => {
       .send({ email, password: PASSWORD })
       .expect(201);
 
-    const login = await request(app.getHttpServer())
-      .post('/api/auth/login')
-      .set(...CSRF)
-      .send({ email, password: PASSWORD })
-      .expect(200);
+      // La connexion est refusée tant que l'adresse n'est pas confirmée.
+      await confirmerAdresse(prisma, email);
 
-    const cookies = login.get('Set-Cookie') ?? [];
+    const cookies = await ouvrirSession(app, prisma, email, PASSWORD);
 
     const depot = await request(app.getHttpServer())
       .post('/api/files')
