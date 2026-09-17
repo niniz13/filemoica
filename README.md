@@ -27,9 +27,9 @@ La version qui tourne réellement est lisible sans accès au serveur :
 |---|---|---|
 | **Martin Simon** | Backend | API, chiffrement, authentification, base de données, conteneurisation, CI/CD |
 | **Jérémy Gross** | Frontend | Interface web Next.js, parcours de dépôt et de téléchargement |
-| **Enzo ANSELMO** | SRC, infrastructure | Déploiement, HTTPS, sauvegardes, supervision |
-| **Julien DOURLET** | SRC, infrastructure | Déploiement, HTTPS, sauvegardes, supervision |
-| **Killian DURANTI MACIA** | SRC, infrastructure | Déploiement, HTTPS, sauvegardes, supervision |
+| **Enzo ANSELMO** | SRC, infrastructure | DNS, reverse proxy public (Caddy), terminaison HTTPS, pare-feu applicatif (WAF) |
+| **Julien DOURLET** | SRC, infrastructure | Observabilité (Grafana/Loki, Uptime Kuma), sauvegardes automatisées (Restic), PRA |
+| **Killian DURANTI MACIA** | SRC, infrastructure | VM et Docker, reverse proxy interne (Nginx), isolation réseau, gestion des secrets (Vault)
 
 Projet Tech Venture Sprint, ESGI 5<sup>e</sup> année.
 
