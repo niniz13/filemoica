@@ -12,7 +12,7 @@ Le pipeline vit dans [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 | | |
 |---|---|
 | **Se déclenche sur** | une pull request vers `main`, un `push` sur `main` (donc aussi tout `merge`), un tag `v*`, ou une relance manuelle |
-| **Étape 1 — vérifier** | lint, types, 143 tests unitaires, 189 tests de bout en bout, compilation |
+| **Étape 1 — vérifier** | lint, types, 145 tests unitaires, 189 tests de bout en bout, compilation |
 | **Étape 2 — livrer** | construction et publication de trois images sur GHCR |
 | **Sur une pull request** | l'étape 1 seule. Une branche en revue vérifie, elle ne livre pas |
 | **Si l'étape 1 échoue** | **rien n'est publié** — les images gardent la version précédente |
@@ -30,7 +30,7 @@ Le job `tests-backend` enchaîne, et **s'arrête au premier échec** :
 | 2 | `npm run lint` | Les erreurs que l'analyse statique voit sans exécuter |
 | 3 | `npx tsc --noEmit -p tsconfig.spec.json` | Les erreurs de type, **dans `src/` comme dans `test/`** |
 | 4 | `npx prisma migrate deploy` | Une migration qui ne s'applique pas sur une base vierge |
-| 5 | `npm test` | 143 tests unitaires |
+| 5 | `npm test` | 145 tests unitaires |
 | 6 | `npm run test:e2e` | 189 tests contre un **vrai** PostgreSQL 17 |
 | 7 | `npm run build` | Une compilation qui casse alors que les tests passent |
 

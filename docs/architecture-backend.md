@@ -1,7 +1,6 @@
-# Architecture — partie backend
+# Architecture : partie backend
 
-Ma part du schéma commun. Les diagrammes sont en Mermaid : ils se rendent
-directement sur GitHub et restent modifiables, contrairement à une image.
+Les diagrammes sont en Mermaid
 
 ---
 
@@ -20,7 +19,7 @@ flowchart LR
         RP["Reverse proxy<br/><b>HTTPS</b>"]
     end
 
-    subgraph iw["Périmètre IW — backend"]
+    subgraph iw["Périmètre IW : backend"]
         direction TB
         API["API NestJS<br/><i>HTTP, port 3000</i>"]
     end
@@ -32,12 +31,15 @@ flowchart LR
     end
 
     KEY["🔑 Clé maître<br/><i>variable d'environnement</i>"]
+    MAIL["✉️ Brevo<br/><i>API transactionnelle</i>"]
 
     U -->|"dépose, partage, révoque"| RP
     D -->|"ouvre un lien"| RP
     RP -->|"HTTP interne"| API
     API <-->|"Prisma"| DB
     API <-->|"flux chiffré"| FS
+    API -->|"lien de confirmation,<br/>code à six chiffres"| MAIL
+    MAIL -->|"courriel"| U
     KEY -.->|"déchiffre les clés de fichiers"| API
 
     style KEY fill:#fff3cd,stroke:#d39e00
@@ -46,7 +48,11 @@ flowchart LR
 ```
 
 **Ce que le schéma doit faire comprendre :** la clé maître n'est **ni en base ni
-sur le volume**. Voler l'un des deux — ou les deux — ne suffit pas.
+sur le volume**. Voler l'un des deux, ou les deux, ne suffit pas.
+
+Brevo est la seule dépendance externe. Elle n'est sollicitée qu'à l'inscription
+et à la connexion des comptes ayant armé le second facteur : une panne de ce
+service n'empêche ni le dépôt, ni le partage, ni le téléchargement.
 
 ---
 
@@ -66,13 +72,47 @@ flowchart TB
 ```
 
 **Pourquoi ce détour plutôt qu'une clé unique :** changer la clé maître ne
-demande de réécrire que les clés de fichiers — quelques dizaines d'octets
+demande de réécrire que les clés de fichiers, quelques dizaines d'octets
 chacune. Les fichiers ne sont jamais relus. *Mesuré : 101 ms pour tout le
 service, contre plusieurs heures s'il fallait tout re-chiffrer.*
 
 ---
 
-## 3. Les contrôles d'accès, dans l'ordre
+## 3. Ouverture d'une session
+
+```mermaid
+flowchart TB
+    L["POST /api/auth/login"] --> PWD{"Mot de passe<br/>correct ?"}
+    PWD -->|non| E401a["401 INVALID_CREDENTIALS<br/><i>même réponse qu'un<br/>email inconnu</i>"]
+    PWD -->|oui| VER{"Adresse<br/>confirmée ?"}
+    VER -->|non| E403["403 EMAIL_NOT_VERIFIED"]
+    VER -->|oui| MFA{"Second facteur<br/>armé sur ce compte ?"}
+    MFA -->|non| OK["Cookies posés<br/><i>mfaRequired: false</i>"]
+    MFA -->|oui| DEFI["Code à six chiffres<br/>envoyé par courriel<br/><i>aucun cookie</i>"]
+    DEFI --> V["POST /api/auth/mfa/verify"]
+    V --> CODE{"Code bon ?<br/><i>5 essais, 10 min</i>"}
+    CODE -->|non| E401b["401 MFA_CODE_INVALID"]
+    CODE -->|oui| OK
+
+    style E401a fill:#f8d7da
+    style E403 fill:#f8d7da
+    style E401b fill:#f8d7da
+    style OK fill:#d1e7dd
+```
+
+**La confirmation d'adresse est contrôlée après le mot de passe**, jamais avant.
+Répondre « adresse non confirmée » à qui n'a pas les identifiants transformerait
+la connexion en oracle révélant quels comptes existent.
+
+**Le second facteur est un réglage par compte**, désactivé par défaut et
+basculé depuis la page de profil. L'imposer à tous ferait dépendre chaque
+connexion d'un envoi de courriel qui aboutit. Sa bascule exige le mot de passe :
+une session volée ne doit pas suffire à désarmer la protection qui rend
+justement le vol difficile.
+
+---
+
+## 4. Les contrôles d'accès, dans l'ordre
 
 ```mermaid
 flowchart TB
@@ -105,7 +145,7 @@ session.
 
 ---
 
-## 4. Dépôt d'un fichier
+## 5. Dépôt d'un fichier
 
 ```mermaid
 sequenceDiagram
@@ -126,13 +166,13 @@ sequenceDiagram
     A-->>C: 201
 ```
 
-**Le contenu n'existe en clair à aucun moment sur le serveur** — ni sur le
+**Le contenu n'existe en clair à aucun moment sur le serveur**, ni sur le
 disque, ni en mémoire complète. Les deux modes de réception fournis par la
 bibliothèque standard ont été écartés pour cette raison.
 
 ---
 
-## 5. Téléchargement par un destinataire sans compte
+## 6. Téléchargement par un destinataire sans compte
 
 ```mermaid
 sequenceDiagram
@@ -157,7 +197,7 @@ sequenceDiagram
 
 ---
 
-## 6. Modèle de données
+## 7. Modèle de données
 
 ```mermaid
 erDiagram
@@ -165,13 +205,17 @@ erDiagram
     User ||--o{ Share : "crée"
     User ||--o{ RefreshToken : "sessions"
     User ||--o{ MonthlyUsage : "consommation"
+    User ||--o{ EmailVerification : "confirmations"
+    User ||--o{ MfaChallenge : "défis"
     Share ||--|{ ShareFile : "couvre"
     File ||--o{ ShareFile : ""
 
     User {
         uuid id
-        string email "en clair — recherche à la connexion"
+        string email "en clair, recherche à la connexion"
         string password_hash "argon2id"
+        bool mfa_enabled "second facteur, par compte"
+        datetime email_verified_at "null tant que non confirmée"
         enum role "USER / ADMIN"
         enum plan "FREE / PREMIUM"
     }
@@ -183,10 +227,26 @@ erDiagram
         string key_version "rotation"
         string content_iv
         string content_auth_tag "intégrité"
+        int size_bytes
+    }
+    EmailVerification {
+        string token_hash "SHA-256, jamais le jeton"
+        datetime expires_at "24 h"
+        datetime consumed_at "à usage unique"
+    }
+    MfaChallenge {
+        string code_hash "argon2id, jamais le code"
+        int attempts "clos à 5"
+        datetime expires_at "10 min"
+        datetime consumed_at
+    }
+    RevokedAccessToken {
+        string jti "liste de refus"
+        datetime expires_at "purgée après expiration"
     }
     Share {
         uuid id
-        string token_hash "SHA-256 — jamais le jeton"
+        string token_hash "SHA-256, jamais le jeton"
         string recipient_email_enc "chiffré, facultatif"
         string password_hash "argon2id, facultatif"
         datetime expires_at
@@ -198,17 +258,17 @@ erDiagram
     }
 ```
 
-**Ce qui est en clair, et pourquoi :** seul `users.email` — la connexion doit
+**Ce qui est en clair, et pourquoi :** seul `users.email`, parce que la connexion doit
 pouvoir chercher par email. La donnée sensible d'un partage, c'est l'email du
 *destinataire*, et celui-là est chiffré.
 
 ---
 
-## 7. Répartition des responsabilités
+## 8. Répartition des responsabilités
 
 ```mermaid
 flowchart LR
-    subgraph SRC["🔵 SRC — infrastructure"]
+    subgraph SRC["🔵 SRC : infrastructure"]
         direction TB
         S1["HTTPS / reverse proxy"]
         S2["Conteneurisation"]
@@ -217,7 +277,7 @@ flowchart LR
         S5["Secrets de production"]
     end
 
-    subgraph IW["🟢 IW — application"]
+    subgraph IW["🟢 IW : application"]
         direction TB
         I1["Chiffrement au repos"]
         I2["Sessions et rôles"]
@@ -248,5 +308,24 @@ deux, et aucun des deux n'est suffisant seul.
 - **Perte de la machine = perte des fichiers** depuis la dernière sauvegarde.
 - **Le serveur détient les clés.** Ce n'est pas du chiffrement de bout en bout :
   un administrateur système y a techniquement accès. L'API, elle, n'offre aucun
-  chemin vers le contenu — y compris aux administrateurs du service.
+  chemin vers le contenu, y compris aux administrateurs du service.
 - **Indisponibilité de quelques secondes** au redémarrage.
+- **Dépendance à un service tiers pour les courriels.** Sans Brevo joignable,
+  aucune inscription ne peut aboutir et les comptes ayant armé le second facteur
+  ne peuvent plus se connecter. Le reste du service continue de fonctionner.
+
+---
+
+## Conservation des fichiers
+
+Un fichier n'est pas effacé à l'expiration de son lien, mais **N jours après la
+fin de son dernier partage** : 30 jours pour l'offre gratuite, 90 pour l'offre
+payante. Un fichier partagé pour 30 jours survit donc à son lien, et le délai ne
+commence à courir qu'ensuite.
+
+Deux exceptions l'effacent plus tôt : la suppression par son propriétaire, et la
+consommation d'un lien à usage unique.
+
+La purge est une tâche planifiée (`npm run files:purge`), pas un effet de bord
+d'une requête : elle est déclenchée par l'infrastructure, journalisée, et son
+échec est visible. Voir [configuration-deploiement.md](configuration-deploiement.md).
