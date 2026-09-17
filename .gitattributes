@@ -1,0 +1,17 @@
+# Les scripts shell sont versionnés en LF, quel que soit le poste qui les écrit.
+#
+# Sans cette règle, un fichier écrit sous Windows part en CRLF dans git, et
+# Linux refuse de l'exécuter : le shebang devient `#!/bin/bash\r`, que le noyau
+# lit comme un interpréteur nommé « bash\r » qui n'existe pas. L'erreur est
+# `bad interpreter: No such file or directory` — parfaitement opaque.
+#
+# Le cas s'est déjà produit sur `backend/docker/init-test-db.sh` : PostgreSQL
+# ignorait silencieusement le script, la base `filemoica_test` n'était jamais
+# créée, et toute la suite end-to-end tombait sur des tables absentes.
+*.sh text eol=lf
+
+# Même raison pour les autres fichiers exécutés par un shell POSIX.
+*.bash text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

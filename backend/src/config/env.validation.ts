@@ -1,4 +1,4 @@
-import { plainToInstance } from 'class-transformer';
+import { plainToInstance, Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
@@ -221,6 +221,12 @@ export class EnvironmentVariables {
    * — voir {@link validateEnv} — car un code d'authentification imprimé dans
    * les journaux n'est plus un secret.
    */
+  // Une variable **déclarée mais vide** vaut absente. Sans cette conversion,
+  // `BREVO_API_KEY=` — qui est exactement ce que contient `.env.example`, et ce
+  // que produit Docker Compose pour une variable non renseignée — donnerait une
+  // chaîne vide, que `@IsOptional()` ne considère pas comme absente : le
+  // service refuserait de démarrer en réclamant une clé à qui n'en veut pas.
+  @Transform(({ value }) => (value === '' ? undefined : value))
   @IsOptional()
   @IsString()
   @MinLength(1)

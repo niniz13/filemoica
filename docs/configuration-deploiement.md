@@ -29,14 +29,17 @@ le reste a une valeur par défaut raisonnable :
 Plus une décision d'infrastructure : **le volume de stockage doit appartenir à
 l'uid 1000**. C'est le point qui casse le plus souvent.
 
-> ⚠️ **Deux migrations sont à appliquer** avant de servir cette version :
-> `verification_adresse_email` et `double_authentification`.
-> `npm run db:deploy` s'en charge. Sur une base déjà en service, **aucune
-> connexion ne fonctionnera tant qu'elles ne sont pas passées** — les tables
-> `email_verifications` et `mfa_challenges` n'existeraient pas.
+> ⚠️ **Trois migrations sont à appliquer** avant de servir cette version :
+> `verification_adresse_email`, `double_authentification` et
+> `mfa_activable_par_compte`. `npm run db:deploy` s'en charge, ou l'image
+> `filemoica-migrations` si vous déployez par conteneurs. Sur une base déjà en
+> service, **aucune connexion ne fonctionnera tant qu'elles ne sont pas
+> passées** — les tables `email_verifications` et `mfa_challenges`, ainsi que la
+> colonne `users.mfa_enabled`, n'existeraient pas.
 
 Partez de [`backend/.env.deploy.example`](../backend/.env.deploy.example), il
-contient déjà la structure.
+contient déjà la structure. Les images à déployer sont publiées
+automatiquement — voir [ci-cd.md](ci-cd.md).
 
 ---
 

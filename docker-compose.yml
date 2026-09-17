@@ -81,6 +81,17 @@ services:
       TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
       RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
       ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
+      # Envoi de courriels. Facultatif ici : sans clé, le service se replie sur
+      # l'écriture des messages dans ses journaux — le lien de confirmation et
+      # le code à six chiffres se lisent alors dans `docker compose logs
+      # backend`. Ce repli n'existe qu'en dehors de la production, et cette pile
+      # tourne justement en `NODE_ENV=development`.
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:-no-reply@filemoica.local}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-filemoica}
+      # Base des liens envoyés par courriel : c'est l'adresse du **front**, pas
+      # de l'API, puisqu'un humain cliquera dessus dans son navigateur.
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:3001}
     ports:
       - '${BACKEND_PORT:-3000}:3000'
     volumes:

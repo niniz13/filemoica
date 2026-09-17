@@ -20,6 +20,13 @@ Ce document liste ce qui dépend de vous. **Répondez directement dans les cases
 | [`backend/.env.deploy.example`](../backend/.env.deploy.example) | Modèle de configuration à remplir |
 | [`backend/scripts/verifier-deploiement.mjs`](../backend/scripts/verifier-deploiement.mjs) | Vérifie un déploiement de l'extérieur |
 | **[configuration-deploiement.md](configuration-deploiement.md)** | **Toutes les variables d'environnement, leurs contraintes et ce qui casse si elles sont mal réglées** |
+| [ci-cd.md](ci-cd.md) | **Les images prêtes à l'emploi** : plus besoin de construire vous-mêmes |
+
+> 🆕 **Vous n'avez plus à construire les images.** Chaque fusion dans `main`
+> publie `filemoica-backend`, `filemoica-migrations` et `filemoica-frontend` sur
+> `ghcr.io/niniz13/…`, après passage de la totalité des tests. Comment s'y
+> authentifier et quel tag prendre : [ci-cd.md](ci-cd.md). La construction
+> locale décrite ci-dessous reste valable, elle devient simplement facultative.
 
 > 📖 **À garder ouvert pendant le déploiement :**
 > [configuration-deploiement.md](configuration-deploiement.md). Ce document-ci
@@ -73,19 +80,21 @@ conteneur répond » de « les contrôles sont en place ».
 
 Le service envoie désormais des courriels, et **la connexion en dépend**.
 
-### Deux migrations à appliquer
+### Trois migrations à appliquer
 
-`verification_adresse_email` et `double_authentification`. `npm run db:deploy`
-s'en charge, mais **sur la base déjà en service, aucune connexion ne
-fonctionnera tant qu'elles ne sont pas passées** — les tables
-`email_verifications` et `mfa_challenges` n'existeraient pas.
+`verification_adresse_email`, `double_authentification` et
+`mfa_activable_par_compte`. `npm run db:deploy` s'en charge — ou l'image
+`filemoica-migrations`, voir [ci-cd.md](ci-cd.md). **Sur la base déjà en
+service, aucune connexion ne fonctionnera tant qu'elles ne sont pas passées** :
+les tables `email_verifications` et `mfa_challenges`, ainsi que la colonne
+`users.mfa_enabled`, n'existeraient pas.
 
 ### Une clé d'API Brevo à configurer
 
 | Ce qui a changé | Conséquence |
 |---|---|
 | L'adresse doit être confirmée par courriel | Un compte non confirmé **ne peut pas se connecter** |
-| Un code à six chiffres est envoyé à chaque connexion | Sans courriel, **personne ne se connecte** |
+| Un code à six chiffres peut être exigé à la connexion | La double authentification est un **réglage par compte**, désactivé par défaut. Sans courriel, les comptes qui l'ont activée sont bloqués |
 
 **`BREVO_API_KEY` vous est transmise séparément par l'équipe IW** — pas par le
 dépôt, pas par la messagerie d'équipe. Elle permet d'envoyer des courriels en
